@@ -919,8 +919,8 @@
   <!-- Marquee Ticker -->
   <div class="marquee-strip">
     <div class="marquee-content">
-      BREAKING: OpenAI ETH-Refutation Subexponential #k-SAT Preprint (Oct 2026) Engineering Implementation &bull; SHARPLOGIC.DEV &bull; Free Offline Sentinel Key Active: ETH-2026 &bull; 0 Deadlocks Guaranteed across all 2ⁿ Agent Paths &bull; In-Agent Python Middleware + Standalone CLI Available &bull;&nbsp;
-      BREAKING: OpenAI ETH-Refutation Subexponential #k-SAT Preprint (Oct 2026) Engineering Implementation &bull; SHARPLOGIC.DEV &bull; Free Offline Sentinel Key Active: ETH-2026 &bull; 0 Deadlocks Guaranteed across all 2ⁿ Agent Paths &bull; In-Agent Python Middleware + Standalone CLI Available &bull;&nbsp;
+      BREAKING: OpenAI ETH-Preprint (Oct 2026) claims subexponential #k-SAT &bull; SHARPLOGIC.DEV &bull; Exact deadlock &amp; livelock counting for agent graphs &bull; Free Offline Sentinel Key Active: ETH-2026 &bull; In-Agent Python Middleware + Standalone CLI Available &bull;&nbsp;
+      BREAKING: OpenAI ETH-Preprint (Oct 2026) claims subexponential #k-SAT &bull; SHARPLOGIC.DEV &bull; Exact deadlock &amp; livelock counting for agent graphs &bull; Free Offline Sentinel Key Active: ETH-2026 &bull; In-Agent Python Middleware + Standalone CLI Available &bull;&nbsp;
     </div>
   </div>
 
@@ -962,12 +962,12 @@
       </div>
 
       <h1 class="hero-title">
-        ZERO-DEADLOCK <span class="highlight">AI AGENTS.</span><br />
-        MATHEMATICALLY PROVEN.
+        COUNT THE TRAPS IN YOUR <span class="highlight">AI AGENTS.</span><br />
+        EXACTLY.
       </h1>
 
       <p class="hero-subtitle">
-        Multi-agent graphs contain hidden infinite retry loops, prompt deadlocks, and permission leaks. Inspired by OpenAI's subexponential #k-SAT model counting breakthrough, SharpLogic evaluates all 2ⁿ states in 68 microseconds.
+        Multi-agent graphs hide retry loops with no exit, dead-end nodes, and approval paths nobody traced. SharpLogic compiles your workflow graph into a CNF formula and counts — exactly — the condition assignments that leave it stuck (#F). Sparse workflow graphs resolve in microseconds; dense formulas take longer (exact counting is exponential in the worst case, up to the 64-variable engine limit).
       </p>
 
       <!-- VIP Access Strip (Unregistered state) -->
@@ -1017,17 +1017,29 @@
             <button class="copy-corner-btn" onclick="copyInAgentCode()">COPY PYTHON</button>
             <pre><code id="python-code-content">from sharplogic import AgentGuard
 
-# Initialize local #k-SAT guardrail (0 cloud calls, 48 µs response)
-guard = AgentGuard(token="sl_offline")
+# Local guardrail: exact deadlock/livelock audit of your workflow graph
+# (0 cloud calls; the analysis runs entirely on your machine).
+WORKFLOW = {
+    "nodes": ["Tool_Executor", "Critic_Fallback", "Human_Approval_Gate"],
+    "terminals": ["Human_Approval_Gate"],
+    "edges": [
+        {"from": "Tool_Executor", "to": "Critic_Fallback",
+         "condition": "tool_timeout or execution_error"},
+        {"from": "Critic_Fallback", "to": "Tool_Executor",
+         "condition": "retry_prompt_generated and retry_count &lt;= 3"},
+        {"from": "Critic_Fallback", "to": "Human_Approval_Gate",
+         "condition": "not retry_prompt_generated or retry_count &gt; 3"},
+    ],
+}
+guard = AgentGuard(token="YOUR_TOKEN", graph=WORKFLOW)
 
-# Mode 1: Decorate LangGraph routing gate or retry loop
-@guard.protect
-def agent_router(state):
-    # Automatically intercepts deadlock transitions across all 2^n paths
-    return next_node(state)
+# Audit the whole graph: counts the condition assignments that trap it
+report = guard.audit()
+print(report["exact_count"])  # trap assignments (#F); 0 = no traps found
 
-# Mode 2: In-loop invariant assertion
-guard.assert_safe("Tool_Executor", "Critic_Fallback", retry_count=state.get("retries", 0))</code></pre>
+# Runtime check of one transition against the current conditions
+guard.assert_safe("Critic_Fallback", "Tool_Executor",
+                  state={"retry_prompt_generated": True}, retry_count=2)</code></pre>
           </div>
 
           <!-- Mode 2: Standalone CLI -->
@@ -1049,7 +1061,7 @@ curl -fsSL https://sharplogic.vercel.app/install.py | python3 - --token sl_user_
             </div>
           </div>
           <p style="font-size: 13px; color: var(--text-muted); margin-bottom: 14px;">
-            Leverage OpenAI's ETH preprint momentum! Share your personalized invite code with colleagues to unlock enterprise-grade auto-patching and CI/CD actions for free:
+            Share your personalized invite code with colleagues to unlock the auto-patch tier and join the waitlist for upcoming tiers:
           </p>
 
           <div class="referral-link-bar">
@@ -1063,22 +1075,22 @@ curl -fsSL https://sharplogic.vercel.app/install.py | python3 - --token sl_user_
             <div class="tier-card unlocked" id="tier-1-card">
               <span class="tier-badge unlocked">TIER 1 (ACTIVE)</span>
               <div class="tier-name">Offline #k-SAT & Middleware</div>
-              <div class="tier-desc">Unlimited local microsecond #k-SAT invariant audits & runtime Python AgentGuard hook.</div>
+              <div class="tier-desc">Local exact model-counting audits plus the runtime Python AgentGuard (full graph audit + per-transition checks).</div>
             </div>
             <div class="tier-card" id="tier-2-card">
               <span class="tier-badge locked" id="tier-2-badge">TIER 2 (INVITE 1)</span>
               <div class="tier-name">1-Click Auto-Patching</div>
-              <div class="tier-desc">Automatically synthesizes loop-breaking constraint code that drops loophole count #F to 0.</div>
+              <div class="tier-desc">Synthesizes real blocking clauses from the solver’s counterexample assignments and re-counts #F exactly after each round — live in the sandbox above.</div>
             </div>
             <div class="tier-card" id="tier-3-card">
               <span class="tier-badge locked" id="tier-3-badge">TIER 3 (INVITE 3)</span>
-              <div class="tier-name">GitHub Actions CI/CD</div>
-              <div class="tier-desc">Automated PR bot blocking PRs that introduce deadlock cycles into agent workflows.</div>
+              <div class="tier-name">GitHub Actions CI/CD — ROADMAP</div>
+              <div class="tier-desc">Waitlist / roadmap — not yet shipped: a PR bot that fails checks when a workflow change introduces trap states. Unlocking records your waitlist spot.</div>
             </div>
             <div class="tier-card" id="tier-4-card">
               <span class="tier-badge locked" id="tier-4-badge">TIER 4 (INVITE 5)</span>
-              <div class="tier-name">Sentinel Hall of Fame</div>
-              <div class="tier-desc">Permanent contributor badge on SharpLogic GitHub README and certified SVG trust badge.</div>
+              <div class="tier-name">Sentinel Hall of Fame — ROADMAP</div>
+              <div class="tier-desc">Planned — not yet live: contributor listing on the SharpLogic GitHub README and an SVG badge for top inviters.</div>
             </div>
           </div>
         </div>
@@ -1145,12 +1157,16 @@ curl -fsSL https://sharplogic.vercel.app/install.py | python3 - --token sl_user_
             <div class="metric-title">WORST-CASE MPE GHOST TRAJECTORY™</div>
             <div style="font-family: var(--font-mono); font-size: 13px; color: #f0f6fc; line-height: 1.6;" id="ghost-trace">
               [context_ambiguity=1] ∧ [tool_timeout=1] ∧ [retry_count&gt;3]<br />
-              <span style="color: #ff7b72; font-weight: 700;">⇒ Agent bounces indefinitely between nodes, burning $420 in API credits.</span>
+              <span style="color: #ff7b72; font-weight: 700;">⇒ Under these conditions the agent can bounce between the two nodes with no enabled exit.</span>
             </div>
             <div style="margin-top: 14px; font-family: var(--font-mono); font-size: 11.5px; color: #8b949e;" id="solve-time-tag">
-              SOLVE TIME: 48.6 µs (Native Rust Subexponential Kernel)
+              SOLVE TIME: measured live on every run
             </div>
           </div>
+        </div>
+
+        <div style="padding: 8px 14px; font-family: var(--font-mono); font-size: 11px; color: #8b949e; border-top: 1px solid #21262d;">
+          Demo scenarios are hand-authored benchmark formulas used to exercise the exact counting engine — they are not compiled from a user graph. Your own graphs are compiled from their actual topology and guard conditions.
         </div>
 
         <!-- Terminal Actions -->
@@ -1177,10 +1193,10 @@ curl -fsSL https://sharplogic.vercel.app/install.py | python3 - --token sl_user_
     <section style="margin-bottom: 80px;" id="why">
       <div class="bento-grid">
         <div class="bento-card">
-          <div class="bento-num">01 / SUBEXPONENTIAL #k-SAT</div>
-          <h3 class="bento-title">Exhaustive 2ⁿ Proof</h3>
+          <div class="bento-num">01 / EXACT #k-SAT COUNTING</div>
+          <h3 class="bento-title">Exhaustive 2ⁿ Counting</h3>
           <p class="bento-desc">
-            A 20-variable agent graph has 1,048,576 execution combinations. 10,000 prompt evals test less than 0.1% of states. SharpLogic evaluates 100% of states in under 70 microseconds.
+            A 20-variable formula has 1,048,576 assignments. 10,000 prompt evals sample under 1% of them. SharpLogic counts the satisfying assignments exactly — every one — with component decomposition and subproblem caching. Sparse workflow formulas resolve in microseconds; dense random formulas hit the exponential wall like every exact counter.
           </p>
         </div>
 
@@ -1196,7 +1212,7 @@ curl -fsSL https://sharplogic.vercel.app/install.py | python3 - --token sl_user_
           <div class="bento-num">03 / FORMAL GUARDRAIL</div>
           <h3 class="bento-title">Self-Synthesizing Patch</h3>
           <p class="bento-desc">
-            Once a deadlock cycle is detected, SharpLogic automatically calculates the minimal invariant blocking clause and proves mathematically that loophole count #F drops to 0.
+            Once a trap is detected, SharpLogic synthesizes blocking clauses from the solver’s own counterexample assignments, generalizes them literal by literal, and re-counts #F exactly after every round. The reported patched count is the engine’s real recount — and the loop stops when it reaches 0 or the round budget ends.
           </p>
         </div>
       </div>
@@ -1212,7 +1228,7 @@ curl -fsSL https://sharplogic.vercel.app/install.py | python3 - --token sl_user_
             <span>+</span>
           </button>
           <div class="faq-answer">
-            Yes! SharpLogic operates in two native modes: (1) <strong>In-Agent Middleware</strong> via <code>from sharplogic import AgentGuard</code>, which intercepts infinite loops and routing deadlocks in under 50 microseconds as a decorator or runtime assertion; and (2) <strong>Standalone CLI</strong>, which audits your exported LangGraph/AutoGen JSON files offline in your CI/CD pipeline.
+            Yes — in two modes: (1) <strong>In-Agent Middleware</strong> via <code>from sharplogic import AgentGuard</code>, which audits your whole workflow graph exactly and checks individual transitions against the current conditions at runtime; and (2) <strong>Standalone CLI</strong> (<code>install.py</code>), which audits exported LangGraph/Dify workflow JSON offline — graphs with up to 16 distinct condition atoms by exact enumeration; larger graphs go through the CNF engine in the full package.
           </div>
         </div>
 
@@ -1222,7 +1238,7 @@ curl -fsSL https://sharplogic.vercel.app/install.py | python3 - --token sl_user_
             <span>+</span>
           </button>
           <div class="faq-answer">
-            OpenAI's October 2026 paper demonstrated that exact counting of Boolean formulas (#k-SAT) can be computed in subexponential time. SharpLogic turns this theoretical breakthrough into an engineering reality: compiling multi-agent state graphs into k-CNF clauses and counting exact deadlock paths (#F) in microseconds.
+            A research claim published in October 2026 (expert review ongoing; not yet peer-reviewed) argues that exact #k-SAT counting can be done in subexponential time. SharpLogic does <strong>not</strong> implement that claimed algorithm. It uses a classical exact DPLL counter with component decomposition and caching, and compiles your multi-agent graph into a trap-counting formula whose satisfying assignments are exactly the condition assignments that deadlock or livelock the workflow.
           </div>
         </div>
 
@@ -1447,12 +1463,12 @@ curl -fsSL https://sharplogic.vercel.app/install.py | python3 - --token sl_user_
       if (invited >= 3) {
         document.getElementById('tier-3-card').className = 'tier-card unlocked';
         document.getElementById('tier-3-badge').className = 'tier-badge unlocked';
-        document.getElementById('tier-3-badge').textContent = 'TIER 3 (UNLOCKED)';
+        document.getElementById('tier-3-badge').textContent = 'TIER 3 (WAITLIST)';
       }
       if (invited >= 5) {
         document.getElementById('tier-4-card').className = 'tier-card unlocked';
         document.getElementById('tier-4-badge').className = 'tier-badge unlocked';
-        document.getElementById('tier-4-badge').textContent = 'TIER 4 (UNLOCKED)';
+        document.getElementById('tier-4-badge').textContent = 'TIER 4 (WAITLIST)';
       }
     }
 
@@ -1507,7 +1523,7 @@ curl -fsSL https://sharplogic.vercel.app/install.py | python3 - --token sl_user_
 
     function shareOnTwitter() {
       const refUrl = currentUser ? currentUser.ref_url : "https://sharplogic.vercel.app/?code=ETH-2026";
-      const tweetText = `OpenAI just dropped the ETH preprint on subexponential #k-SAT. I'm testing @SharpLogicDev on my LangGraph multi-agent setup — scanned 1M states in 48 µs and isolated cyclic deadlocks before production. Claim free agent guardrail key here: ${refUrl}`;
+      const tweetText = `OpenAI just dropped the ETH preprint on subexponential #k-SAT. I'm testing @SharpLogicDev on my LangGraph multi-agent setup — ran an exact trap-state audit on my LangGraph setup and isolated the cyclic deadlocks before production. Claim free agent guardrail key here: ${refUrl}`;
       const twitterUrl = `https://twitter.com/intent/tweet?text=${encodeURIComponent(tweetText)}`;
       window.open(twitterUrl, '_blank');
     }
@@ -1559,7 +1575,7 @@ curl -fsSL https://sharplogic.vercel.app/install.py | python3 - --token sl_user_
 
         ghostTrace.innerHTML = `
           [context_ambiguity=1] ∧ [tool_timeout=1] ∧ [retry_count>3]<br />
-          <span style="color: #ff7b72; font-weight: 700;">⇒ Agent enters infinite retry loop, burning $420 in tokens before crashing.</span>
+          <span style="color: #ff7b72; font-weight: 700;">⇒ Agent enters a retry loop whose exit is disabled under these conditions.</span>
         `;
 
         btnReset.style.display = 'none';

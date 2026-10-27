@@ -114,11 +114,47 @@ def _serverless_unit_propagate(
     return active, acc_wmc, acc_best_w, -1
 
 
+def _serverless_subproblem_key(clauses, comp_vars, assign):
+    canon = sorted(idx for _, idx in clauses)
+    relevant = set(comp_vars)
+    for lits, _ in clauses:
+        for lit in lits:
+            relevant.add(abs(lit) - 1)
+    return (
+        tuple(canon),
+        tuple(sorted(comp_vars)),
+        tuple(assign[v] + 1 for v in sorted(relevant)),
+    )
+
+
 def _serverless_dpll_component(
     clauses: List[Tuple[List[int], int]],
     comp_vars: List[int],
     assign: List[int],
     weights: List[float],
+    cache=None,
+) -> Tuple[int, float, float, List[int], int]:
+    """Memoized entry point; the counter is pure in (clauses, comp_vars,
+    relevant assignment), so caching subproblem results is exact."""
+    if cache is None:
+        cache = {}
+    key = None
+    if len(clauses) >= 32:
+        key = _serverless_subproblem_key(clauses, comp_vars, assign)
+        if key in cache:
+            return cache[key]
+    result = _serverless_dpll_inner(clauses, comp_vars, assign, weights, cache)
+    if key is not None:
+        cache[key] = result
+    return result
+
+
+def _serverless_dpll_inner(
+    clauses: List[Tuple[List[int], int]],
+    comp_vars: List[int],
+    assign: List[int],
+    weights: List[float],
+    cache,
 ) -> Tuple[int, float, float, List[int], int]:
     local_assign = list(assign)
     reduced, unit_wmc, unit_best_w, conflict_idx = _serverless_unit_propagate(
@@ -151,6 +187,51 @@ def _serverless_dpll_component(
     if not reduced:
         return (1 << free_count), unit_wmc, unit_best_w, local_assign, -1
 
+    # Dynamic component decomposition of the residual formula
+    # (mirrors the Rust kernel exactly).
+    if len(reduced) >= 6:
+        parent = {v: v for v in remaining_vars}
+
+        def find(x):
+            while parent[x] != x:
+                parent[x] = parent[parent[x]]
+                x = parent[x]
+            return x
+
+        for lits, _ in reduced:
+            first = abs(lits[0]) - 1
+            for lit in lits[1:]:
+                ra, rb = find(first), find(abs(lit) - 1)
+                if ra != rb:
+                    parent[ra] = rb
+        groups = {}
+        for v in remaining_vars:
+            groups.setdefault(find(v), []).append(v)
+        if len(groups) > 1:
+            total_count = 1 << free_count
+            total_wmc = unit_wmc
+            total_best = unit_best_w
+            chosen = list(local_assign)
+            for group in sorted(groups.values(), key=lambda g: g[0]):
+                gset = set(group)
+                gclauses = [
+                    c for c in reduced
+                    if all((abs(l) - 1) in gset for l in c[0])
+                ]
+                sub = _serverless_dpll_component(gclauses, group, local_assign, weights, cache)
+                if sub[0] == 0:
+                    return (0, 0.0, 0.0, local_assign, sub[4])
+                total_count *= sub[0]
+                total_wmc *= sub[1]
+                total_best *= sub[2]
+                for v in group:
+                    if sub[3][v] != -1:
+                        chosen[v] = sub[3][v]
+            for v in comp_vars:
+                if local_assign[v] != -1 and chosen[v] == -1:
+                    chosen[v] = local_assign[v]
+            return (total_count, total_wmc, total_best, chosen, -1)
+
     min_len = min(len(lits) for lits, _ in reduced)
     best_var = remaining_vars[0]
     best_score = -1
@@ -168,13 +249,13 @@ def _serverless_dpll_component(
     assign_t = list(local_assign)
     assign_t[best_var] = 1
     cnt_t, wmc_t, best_w_t, best_a_t, conf_t = _serverless_dpll_component(
-        reduced, remaining_vars, assign_t, weights
+        reduced, remaining_vars, assign_t, weights, cache
     )
 
     assign_f = list(local_assign)
     assign_f[best_var] = 0
     cnt_f, wmc_f, best_w_f, best_a_f, conf_f = _serverless_dpll_component(
-        reduced, remaining_vars, assign_f, weights
+        reduced, remaining_vars, assign_f, weights, cache
     )
 
     p_t = weights[best_var]
@@ -209,7 +290,11 @@ def _serverless_solve_cnf(
     prior_weights: List[float],
 ) -> Dict[str, Any]:
     t0 = time.perf_counter()
-    n = min(num_vars, MAX_VARS)
+    if num_vars > MAX_VARS:
+        raise ValueError(
+            f"num_vars {num_vars} exceeds the engine limit MAX_VARS={MAX_VARS}"
+        )
+    n = num_vars
     weights = [
         min(0.9999, max(0.0001, float(prior_weights[i]))) if i < len(prior_weights) else 0.5
         for i in range(n)
@@ -479,7 +564,23 @@ class RustSharpLogicEngine:
         weights: Optional[List[float]] = None,
         var_names: Optional[List[str]] = None,
     ) -> Dict[str, Any]:
-        """Solves exact #k-SAT and Weighted Model Counting (#F & WMC)."""
+        """Solves exact #k-SAT and Weighted Model Counting (#F & WMC).
+
+        Raises ValueError when the formula exceeds MAX_VARS variables or
+        references out-of-range literals; oversized formulas are never
+        silently truncated.
+        """
+        if num_vars > MAX_VARS:
+            raise ValueError(
+                f"num_vars {num_vars} exceeds the engine limit MAX_VARS={MAX_VARS}; "
+                "split the formula or reduce its variables"
+            )
+        for clause in clauses:
+            for lit in clause:
+                if lit == 0 or abs(lit) > num_vars:
+                    raise ValueError(
+                        f"clause literal {lit} is outside the variable range for num_vars={num_vars}"
+                    )
         if weights is None:
             w_list = [0.5] * num_vars
         else:

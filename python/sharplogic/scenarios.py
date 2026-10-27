@@ -1,6 +1,15 @@
 """
-Flagship Neuro-Symbolic Audit Scenarios & Adversarial Red-Team Corpus for SharpLogic.
-All scenarios are evaluated dynamically by the Native Rust #k-SAT & WMC solver.
+Flagship benchmark scenarios & adversarial red-team corpus for SharpLogic.
+
+IMPORTANT (formula provenance): the three flagship scenarios below use
+HAND-AUTHORED benchmark CNF formulas.  Their variables and clauses were
+written by hand to model the described situations, and the engine's exact
+counts for them (#F = 42 / 192 / 1920) are real, brute-force-verifiable
+model counts of those benchmark formulas.  They are NOT compiled from a
+user's LangGraph / workflow graph.  User-supplied graphs always go through
+Autoformalizer's trap-encoding compiler (see compiler.py), which derives
+its formula from the actual graph topology and guard conditions.
+All scenario counts are evaluated dynamically by the #k-SAT & WMC solver.
 """
 
 from typing import Any, Dict, List, Optional
@@ -11,6 +20,7 @@ from .compiler import Autoformalizer
 SCENARIOS: Dict[str, Dict[str, Any]] = {
     "ecommerce_promo": {
         "id": "ecommerce_promo",
+        "formula_origin": "hand_authored_benchmark",
         "persona_badge": "ENTRY 01 // E-COMMERCE & FINTECH PROMO RADAR",
         "title": "E-Commerce Refund & Stacked Promo Audit",
         "title_zh": "电商大促叠加与售后退款 Agent 防薅精算",
@@ -119,6 +129,7 @@ SCENARIOS: Dict[str, Dict[str, Any]] = {
     },
     "agent_workflow": {
         "id": "agent_workflow",
+        "formula_origin": "hand_authored_benchmark",
         "persona_badge": "ENTRY 02 // AI AGENT WORKFLOW STATIC ACTUARY",
         "title": "LangGraph / Dify Financial Agent Routing Audit",
         "title_zh": "AI Agent 工作流死锁与越权调用静态精算",
@@ -206,6 +217,7 @@ SCENARIOS: Dict[str, Dict[str, Any]] = {
     },
     "cloud_iam": {
         "id": "cloud_iam",
+        "formula_origin": "hand_authored_benchmark",
         "persona_badge": "ENTRY 03 // CLOUD IAM & K8S BLAST RADIUS QUANTIFIER",
         "title": "AWS IAM & K8s RBAC Policy Blast Radius Audit",
         "title_zh": "云安全 IAM 权限变更与攻击暴露面倍数精算",
@@ -295,6 +307,75 @@ SCENARIOS: Dict[str, Dict[str, Any]] = {
 }
 
 
+def synthesize_blocking_patch(
+    engine,
+    num_vars: int,
+    base_clauses: List[List[int]],
+    weights: List[float],
+    var_names: List[str],
+    max_rounds: int = 64,
+):
+    """Iterative counterexample blocking (the real 'auto-patch').
+
+    Each round solves the current formula, takes the solver's witness
+    (ghost) assignment, and adds ONE blocking clause: the negation of
+    that witness, greedily generalized by dropping literals while the
+    clause keeps reducing the exact count.  The formula is re-solved
+    after every round, so the reported final #F is always the engine's
+    true recount - it reaches 0 exactly when every loophole assignment
+    has been blocked, and otherwise reports the true remaining count.
+
+    Returns (added_clauses, added_descriptions, final_result).
+    """
+    clauses = list(base_clauses)
+    added: List[List[int]] = []
+    descs: List[str] = []
+    current = engine.solve_cnf(
+        num_vars=num_vars, clauses=clauses, weights=weights, var_names=var_names
+    )
+    rounds = 0
+    while current["exact_count"] > 0 and rounds < max_rounds:
+        ghost = current["ghost_assignment"]
+        block = [
+            (-(i + 1)) if ghost.get(var_names[i], False) else (i + 1)
+            for i in range(num_vars)
+        ]
+        round_start_count = current["exact_count"]
+        # Greedy generalization: drop literals while the smaller clause
+        # still strictly reduces the count vs the round start.
+        improved = True
+        while improved and len(block) > 1:
+            improved = False
+            for lit in list(block):
+                if len(block) <= 1:
+                    break
+                trial = [x for x in block if x != lit]
+                trial_res = engine.solve_cnf(
+                    num_vars=num_vars,
+                    clauses=clauses + added + [trial],
+                    weights=weights,
+                    var_names=var_names,
+                )
+                if trial_res["exact_count"] < round_start_count:
+                    block = trial
+                    current = trial_res
+                    improved = True
+        clauses = clauses + [block]
+        added.append(block)
+        # Always recount from the updated formula so the next round's
+        # witness and the reported counts are the engine's true values.
+        current = engine.solve_cnf(
+            num_vars=num_vars, clauses=clauses, weights=weights, var_names=var_names
+        )
+        descs.append(
+            f"AUTO-PATCH round {rounds + 1}: blocking clause "
+            f"({Autoformalizer.format_clause_math(block, var_names)}) synthesized from the "
+            f"solver's counterexample assignment; exact recount #F = {current['exact_count']}."
+        )
+        rounds += 1
+    return added, descs, current
+
+
 def evaluate_scenario(
     scenario_id: str,
     apply_patch: bool = False,
@@ -381,6 +462,11 @@ def evaluate_scenario(
 
     return {
         "scenario_id": scenario_id,
+        "formula_origin": scen.get("formula_origin", "hand_authored_benchmark"),
+        "formula_note": (
+            "Hand-authored benchmark CNF used to benchmark the exact counting engine; "
+            "not compiled from a user workflow graph."
+        ),
         "persona_badge": scen["persona_badge"],
         "title": scen["title"],
         "title_zh": scen["title_zh"],
@@ -430,29 +516,16 @@ def evaluate_custom_rules(
         var_names=var_names,
     )
 
-    if apply_patch and clauses:
-        # Add an automatic blocking clause negating the Ghost Path assignment on the first 3 active variables
-        ghost = unpatched_res["ghost_assignment"]
-        block_clause = []
-        for name in var_names[:3]:
-            val = ghost.get(name, True)
-            v_idx = var_names.index(name) + 1
-            block_clause.append(-v_idx if val else v_idx)
-        # Also add direct negation of first variable to guarantee #F = 0 invariant closure
-        clauses.append([-1])
-        clauses.append([1])
-        descs.append("AUTO-PATCH [Invariant Closure]: Enforced hard mutual exclusion on conflicting path")
-
-    current_res = (
-        engine.solve_cnf(
-            num_vars=compiled["num_vars"],
-            clauses=clauses,
-            weights=weights,
-            var_names=var_names,
+    patch_added: List[List[int]] = []
+    patch_descs: List[str] = []
+    if apply_patch and clauses and unpatched_res["exact_count"] > 0:
+        patch_added, patch_descs, current_res = synthesize_blocking_patch(
+            engine, compiled["num_vars"], clauses, weights, var_names
         )
-        if apply_patch
-        else unpatched_res
-    )
+        clauses = clauses + patch_added
+        descs = descs + patch_descs
+    else:
+        current_res = unpatched_res
 
     ghost_steps = [
         {
@@ -495,8 +568,20 @@ def evaluate_custom_rules(
                 f"({current_res['combinatorial_percent']} of state space) in {current_res['solve_time_us']} µs."
             ),
             "root_cause_clause": "Autoformalized k-CNF satisfaction assignment (see Ghost Path trace below).",
-            "patched_rule_text": "Synthesized hard invariant blocking clause eliminating the loophole subspace (#F = 0).",
+            "patched_rule_text": (
+                f"Auto-patch added {len(patch_added)} blocking clause(s) synthesized from solver "
+                f"counterexamples; exact recount after patching: #F = {current_res['exact_count']} "
+                f"(before patching: {unpatched_res['exact_count']})."
+                if apply_patch
+                else "No patch applied."
+            ),
         },
+        "graph_analysis": compiled.get("graph_analysis"),
+        "trap_witness": [
+            desc
+            for name, desc in (compiled.get("witness_vars") or {}).items()
+            if current_res["ghost_assignment"].get(name)
+        ],
         "ghost_steps": ghost_steps,
         "manifold_active_slots": engine.active_memory_slots(),
     }

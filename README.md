@@ -1,8 +1,15 @@
-# SharpLogic (#∧) — Formal Verification Infrastructure for AI Agents
+# SharpLogic (#∧) — Exact Trap-State Counting for AI Agent Workflows
 
-> **"Don't Guess with Prompts. Prove It with Math."**  
-> System Two Mathematical Guardrail for LangGraph, CrewAI & Multi-Agent Workflows.  
-> Inspired by OpenAI's subexponential `#k-SAT` model counting research (*"The Exponential Time Hypothesis is False"*, Oct 2026).
+> **"Don't Guess with Prompts. Count It with Math."**
+> SharpLogic compiles your multi-agent routing graph into a CNF formula whose
+> satisfying assignments are exactly the condition assignments that leave the
+> workflow stuck — then counts them exactly (#F) with a native Rust engine.
+>
+> Inspired by the October 2026 research claim (*"The Exponential Time Hypothesis
+> is False"*, expert review ongoing, not yet peer-reviewed) that exact `#k-SAT`
+> counting can be done in subexponential time. **SharpLogic does not implement
+> that claimed algorithm** — it uses a classical exact DPLL counter with
+> component decomposition, subproblem caching, and safe clause preprocessing.
 
 [![Live Demo](https://img.shields.io/badge/Live%20Demo-sharplogic.vercel.app-03AA5C?style=flat-square)](https://sharplogic.vercel.app/?code=ETH-2026)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg?style=flat-square)](LICENSE)
@@ -12,50 +19,59 @@
 
 ## ⚡ Why SharpLogic?
 
-When you build multi-agent systems with **LangGraph**, **CrewAI**, or **Dify**, agents dynamically hand off tasks, execute tools, and retry on failure. With just 20 context & routing variables, your execution state space explodes to **$2^{20} = 1,048,576$ trajectories**.
+When you build multi-agent systems with **LangGraph**, **CrewAI**, or **Dify**, agents hand off tasks, execute tools, and retry on failure. With just 20 context & routing variables, the execution state space is **$2^{20} = 1,048,576$ assignments**.
 
-- **The Problem with LLM Evals**: Running 1,000 or 10,000 prompt tests only covers $< 0.1\%$ of states. The remaining $99.9\%$ contain hidden cyclic deadlocks where agents loop infinitely, burning thousands of dollars in API tokens before crashing.
-- **The Solution**: SharpLogic autoformalizes your multi-agent routing graph into Boolean satisfiability ($k$-CNF) algebra and counts all exact loophole paths ($\#F$) in **$< 70\ \mu\text{s}$** using a pure Rust engine.
+- **The Problem with LLM Evals**: Running 1,000 or 10,000 prompt tests samples under 1% of those states. The rest can contain cyclic deadlocks (retry loops with no enabled exit), dead-end nodes, and stalled approval paths.
+- **The Solution**: SharpLogic's compiler encodes your actual graph — topology plus edge guard conditions — into a trap-counting CNF. A **trap assignment** is a valuation of the guard conditions under which (a) a reachable, non-terminal node has every outgoing edge disabled (deadlock), or (b) a reachable cycle / strongly connected region has every exit edge disabled (livelock). A retry loop whose exit guard is the exact logical complement of its loop guard (the bounded-retry pattern) is reported as *guarded*, not as a trap. Terminal nodes are absorbing. The engine's exact count #F is the number of trap assignments — computed from your graph, never hard-coded.
 
 ```
    [User Goal] ──► [Planner Agent] ──► [Tool Executor]
                                              ▲   │
                                              │   ▼
-                                       [Critic / Retry] 🚨 Cyclic Deadlock (#F = 192)
+                                       [Critic / Retry] 🚨 trap states counted exactly (#F)
                                              │
                                              ▼
-                                    [Approval Gate] (Bypassed!)
+                                    [Approval Gate]
 ```
 
-With 1 click, SharpLogic synthesizes a minimal blocking guardrail clause and **proves that $\#F \to 0$ across all 1,048,576 states (UNSAT Core Verified)**.
+**Auto-patch**: when #F > 0, the sandbox can synthesize real blocking clauses from the solver's own counterexample assignments (each clause is the negation of a trap assignment, greedily generalized literal-by-literal while the count strictly drops), re-counting #F exactly after every round until it reaches 0 or the round budget (64) ends.
+
+**Benchmark scenarios**: the three flagship demos (#F = 42 / 192 / 1920) use *hand-authored benchmark CNF formulas* to exercise the counting engine. Their counts are real, brute-force-verifiable model counts of those formulas — they are **not** compiled from a user graph. User graphs always go through the trap compiler above.
 
 ---
 
 ## 🚀 Quick Start (1-Line Standalone Agent Verifier)
 
-Verify your agent workflow locally with zero cloud API keys, zero dependencies, and zero data leaving your machine:
+Verify your agent workflow locally with zero cloud API keys and zero data leaving your machine:
 
 ```bash
-# 1. Test your own LangGraph/Agent JSON workflow export:
+# 1. Audit your own LangGraph/Agent JSON workflow export:
 curl -fsSL https://sharplogic.vercel.app/install.py | python3 - --graph my_agent.json
 
-# 2. Or run the built-in 20-variable deadlock demo:
+# 2. Or run the built-in demo (a deliberately flawed support workflow,
+#    then the same workflow with the traps removed and re-audited):
 curl -fsSL https://sharplogic.vercel.app/install.py | python3 -
 ```
+
+The standalone checker enumerates condition assignments exactly and supports
+graphs with up to **16 distinct condition atoms**; larger graphs are rejected
+with an explicit error and should be audited through the full package (the CNF
+engine), which accepts encodings up to **MAX_VARS = 64 variables** and raises
+a clear error beyond that — formulas are never silently truncated.
 
 ### Python SDK Integration (Pre-Deployment Guardrail Gate)
 
 ```python
 import requests
 
-# Run verification in your CI/CD pipeline or pre-commit hook
+# Run verification in your CI pipeline or pre-commit hook
 resp = requests.post(
     "https://sharplogic.vercel.app/api/audit",
     json={"scenario_id": "agent_workflow", "patched": False}
 ).json()
 
 assert resp["audit"]["exact_count"] == 0, (
-    f"Blocked release! #F={resp['audit']['exact_count']} deadlocks detected: "
+    f"Blocked release! #F={resp['audit']['exact_count']} trap states detected: "
     f"{resp['ghost_path_summary']['headline']}"
 )
 ```
@@ -64,15 +80,40 @@ assert resp["audit"]["exact_count"] == 0, (
 
 ## 🏗️ Architecture
 
-1. **Zero-Dependency Native Rust Core (`src/lib.rs` -> `libsharplogic_core.dylib`)**:
-   - **Exact `#k-SAT` & Weighted Model Counting (`WMC`)**:
+1. **Zero-Dependency Native Rust Core (`src/lib.rs`)**:
+   - **Exact `#k-SAT` & Weighted Model Counting (WMC)**:
      $$\#F = \left|\left\{ x \in \{0,1\}^n : F(x) = 1 \right\}\right|, \quad \text{WMC}(F) = \sum_{x \models F} \prod_{i=1}^n w(x_i)$$
-   - Uses **Iterative Unit Propagation**, **Disjoint Connected-Component Decomposition** ($\#F(C_1 \land C_2) = \#F(C_1) \times \#F(C_2)$), and **MOMS DPLL** to evaluate $2^{24}$ states in $< 100\ \mu\text{s}$.
-   - **MPE Ghost Path™ Extraction**: Isolates the single highest-probability counterexample witness.
-   - **$O(K)$ Bounded Manifold (128 slots)**: Resilient against 500+ alert storms with microsecond persistence (`b"SLGC"`).
+   - DPLL with iterative unit propagation, top-level **and dynamic** disjoint component decomposition ($\#F(C_1 \land C_2) = \#F(C_1) \times \#F(C_2)$), subproblem memoization, safe preprocessing (literal dedupe, tautology/duplicate removal, subsumption), and the MOMS branching heuristic.
+   - **MPE Ghost Path Extraction**: the highest-probability counterexample assignment, used as the auto-patch witness.
+   - **$O(K)$ Bounded Manifold (128 slots)**: bounded alert/event store with `b"SLGC"` snapshot persistence.
+   - Hard limit **MAX_VARS = 64**: oversized formulas and out-of-range literals return loud errors (FFI codes −2/−3), never truncated results.
 
-2. **Serverless Kernel Parity (`python/sharplogic/bridge.py`)**:
-   - Guaranteed bit-exact dual-engine fallback for environments without a Rust compiler.
+2. **Graph Trap Compiler (`python/sharplogic/compiler.py`)**:
+   - Parses LangGraph/Dify-style JSON (nodes, edges, guard conditions with `and`/`or`/`not` and comparisons; complementary comparisons are canonicalized, so `retry_count >= 3` is recognized as the negation of `retry_count < 3`).
+   - Emits a CNF in exact 1-to-1 correspondence with trap assignments (functionally-determined reachability/support/witness variables), plus a structural layer (Tarjan SCCs, dead ends, unreachable nodes, guarded cycles).
+   - Cross-validated against an independent brute-force implementation of the semantics on 200 random graphs (0 mismatches).
+
+3. **Serverless Kernel Parity (`python/sharplogic/bridge.py`)**:
+   - A pure-Python port mirrors the Rust kernel; a test enforces bit-exact parity (counts, WMC, scores, ghost assignments) between the two engines.
+
+### Measured performance (medians, this repo's dev sandbox)
+
+| Workload | Median solve time |
+|---|---|
+| Flagship benchmark formulas (20–24 vars) | 3.7–6.4 µs |
+| Sample agent graph, trap-compiled (18 vars) | 33 µs |
+| Router graphs, 10–15 guard atoms | 5–8 µs |
+| Diamond pipeline, trap-compiled (50 vars) | 286 µs |
+| Retry pipeline, trap-compiled (44 vars) | 261 µs |
+| Dense random 3-SAT, 40 vars (r = 2.0) | 31 ms |
+| Dense random 3-SAT, 50 vars (r = 2.0) | 0.46 s |
+| Dense random 3-SAT, 64 vars (r = 2.0) | 6.7 s |
+
+Exact counting is exponential in the worst case: sparse, structured workflow
+formulas land in the microsecond range, dense random formulas hit the
+exponential wall — the table reports both, as measured. (The 64-variable
+dense case is ≈3× faster than the pre-optimization engine's 19.9 s on the
+same machine and seeds.)
 
 ---
 
@@ -82,7 +123,7 @@ assert resp["audit"]["exact_count"] == 0, (
 # 1. Run Rust test suite (3/3 passing)
 cargo test
 
-# 2. Run Python & End-to-End integration test suite (7/7 passing)
+# 2. Run Python test suites (18/18 passing: 8 end-to-end + 10 graph-audit/limits)
 python3 -m unittest discover -s tests -v
 
 # 3. Start local development server on port 8765
@@ -95,3 +136,4 @@ python3 server.py
 
 - **Production URL**: [https://sharplogic.vercel.app](https://sharplogic.vercel.app)
 - **VIP Launch Invite Code**: `ETH-2026` (Pre-activated at `https://sharplogic.vercel.app/?code=ETH-2026`)
+- Referral tiers: Tier 1 (offline engine + AgentGuard) and Tier 2 (auto-patch, live in the sandbox/API) are shipped. Tier 3 (GitHub Actions PR bot) and Tier 4 (Sentinel Hall of Fame) are **roadmap/waitlist** — unlocking them records a waitlist spot; they are not yet available.

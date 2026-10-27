@@ -48,10 +48,10 @@ VALID_INVITE_CODES = {
 
 def load_stats() -> dict:
     default_stats = {
-        "total_visits": 1286,
-        "total_unlocked": 413,
-        "total_audits": 3891,
-        "codes_used": {"ETH-2026": 285, "SHARP-AGENT": 92, "OPENAI-MATH": 36},
+        "total_visits": 0,
+        "total_unlocked": 0,
+        "total_audits": 0,
+        "codes_used": {},
         "users": {},
         "referral_codes": {},
     }
@@ -277,19 +277,31 @@ def dispatch_api_request(
             if invited >= 5:
                 tiers.append("github_sentinel_hall")
 
-            in_agent_sample = f'''from sharplogic import AgentGuard
+            in_agent_sample = '''from sharplogic import AgentGuard
 
-# Initialize local #k-SAT guardrail (0 cloud calls, 48 µs response)
-guard = AgentGuard(token="{token}")
+# Local guardrail: exact deadlock/livelock audit of your workflow graph
+# (0 cloud calls; analysis runs entirely on your machine).
+WORKFLOW = {
+    "nodes": ["Tool_Executor", "Critic_Fallback", "Human_Approval_Gate"],
+    "terminals": ["Human_Approval_Gate"],
+    "edges": [
+        {"from": "Tool_Executor", "to": "Critic_Fallback",
+         "condition": "tool_timeout or execution_error"},
+        {"from": "Critic_Fallback", "to": "Tool_Executor",
+         "condition": "retry_prompt_generated and retry_count <= 3"},
+        {"from": "Critic_Fallback", "to": "Human_Approval_Gate",
+         "condition": "not retry_prompt_generated or retry_count > 3"},
+    ],
+}
+guard = AgentGuard(token="__TOKEN__", graph=WORKFLOW)
 
-# Mode 1: Decorate LangGraph routing gate or retry loop
-@guard.protect
-def agent_router(state):
-    # Automatically intercepts deadlock transitions across all 2^n paths
-    return next_node(state)
+# Audit the whole graph: counts the condition assignments that trap it
+report = guard.audit()
+print(report["exact_count"])  # trap assignments (#F); 0 = no traps found
 
-# Mode 2: In-loop invariant assertion
-guard.assert_safe("Tool_Executor", "Critic_Fallback", retry_count=state.get("retries", 0))'''
+# Runtime check of one transition against the current conditions
+guard.assert_safe("Critic_Fallback", "Tool_Executor",
+                  state={"retry_prompt_generated": True}, retry_count=2)'''.replace("__TOKEN__", token)
 
             return 200, {
                 "ok": True,

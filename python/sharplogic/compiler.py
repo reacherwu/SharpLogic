@@ -9,7 +9,7 @@ Production Neuro-Symbolic Autoformalization Compiler:
 import json
 import os
 import re
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 from urllib.request import Request, urlopen
 
 
@@ -123,55 +123,939 @@ class Autoformalizer:
             "self_correction_log": log,
         }
 
+    # ------------------------------------------------------------------
+    # Agent workflow graph -> trap-formula compiler (exact semantics).
+    #
+    # Edges carry Boolean guard conditions over named atomic predicates
+    # (the "condition variables", e.g. `retry_count > 3`).  A *trap
+    # assignment* is a valuation of the condition variables under which
+    # the workflow can fail to make progress:
+    #   * deadlock - a reachable, non-terminal node has every outgoing
+    #     edge disabled by the assignment;
+    #   * livelock - a directed cycle (or strongly connected region) is
+    #     reachable, its cycle edges are enabled, and every edge leaving
+    #     the cycle/region is disabled.
+    # The emitted CNF is in exact 1-to-1 correspondence with trap
+    # assignments: every auxiliary variable (reachability, canonical
+    # support, trap witnesses) is functionally determined by the
+    # condition variables, so the engine's exact count #F is exactly the
+    # number of trap assignments.  A cycle whose exit guard is the exact
+    # logical complement of the cycle's own guard conjunction (the
+    # bounded-retry pattern "retry while A, exit when not A") is
+    # reported as guarded and excluded from the trap formula.
+    # Known boundary (reported in graph_analysis.limitations when it
+    # occurs): reachability grounding is exact for SCCs whose cycles
+    # are entered from outside the cycle; a tangle of mutually feeding
+    # cycles inside one SCC that is disconnected from every entry could
+    # in principle be counted as reachable - such regions are also
+    # flagged as unreachable_node findings by the structural layer.
+    # ------------------------------------------------------------------
+
+    @classmethod
+    def _guard_dnf(cls, raw: Any) -> List[List[Tuple[str, bool]]]:
+        """Parses an edge condition into DNF over atomic predicates.
+
+        Returns a list of conjunctions of (atom_text, is_positive).
+        ``[]`` means "never enabled"; ``[[]]`` means unconditional.
+        """
+        if raw is None or raw is True:
+            return [[]]
+        if raw is False:
+            return []
+        if isinstance(raw, (int, float)):
+            return [[]] if raw else []
+        s = str(raw).strip()
+        if not s or s.lower() in {"true", "always", "1"}:
+            return [[]]
+        if s.lower() in {"false", "never", "0"}:
+            return []
+        dnf: List[List[Tuple[str, bool]]] = []
+        for part in re.split(r"\s*\|\|\s*|\s+\bor\b\s+", s, flags=re.IGNORECASE):
+            part = part.strip()
+            while part.startswith("(") and part.endswith(")"):
+                part = part[1:-1].strip()
+            if not part:
+                continue
+            conj: Optional[List[Tuple[str, bool]]] = []
+            for tok in re.split(r"\s*&&\s*|\s+\band\b\s+", part, flags=re.IGNORECASE):
+                tok = tok.strip()
+                while tok.startswith("(") and tok.endswith(")"):
+                    tok = tok[1:-1].strip()
+                if not tok:
+                    continue
+                pos = True
+                m_not = re.match(r"^(not|!|~)\s+", tok, flags=re.IGNORECASE)
+                if m_not:
+                    pos = False
+                    tok = tok[m_not.end():].strip()
+                atom = re.sub(r"\s+", " ", tok.strip().lower())
+                if atom in {"true", "1"}:
+                    continue
+                if atom in {"false", "0"}:
+                    conj = None
+                    break
+                if atom:
+                    conj.append(cls._canonical_atom(atom, pos))
+            if conj is not None:
+                dnf.append(conj)
+        return dnf
+
+
+    _CMP_RE = re.compile(r"^([a-z0-9_\.\[\]]+)\s*(<=|>=|==|!=|<|>)\s*([^\s]+)$")
+
+    @classmethod
+    def _canonical_atom(cls, atom: str, pos: bool) -> Tuple[str, bool]:
+        """Canonicalizes comparison atoms so complementary guards share
+        one atom: ``x >= 3`` is the negation of ``x < 3``, ``x > 3`` of
+        ``x <= 3``, ``x != 3`` of ``x == 3``.  This is what lets the
+        compiler recognize the bounded-retry pattern (loop while
+        ``retry_count < 3``, exit when ``retry_count >= 3``) as guarded.
+        Non-comparison atoms pass through unchanged."""
+        m = cls._CMP_RE.match(atom)
+        if not m:
+            return atom, pos
+        lhs, op, rhs = m.group(1), m.group(2), m.group(3)
+        base_op, negated = {
+            "<": ("<", False),
+            ">=": ("<", True),
+            "<=": ("<=", False),
+            ">": ("<=", True),
+            "==": ("==", False),
+            "!=": ("==", True),
+        }[op]
+        return f"{lhs} {base_op} {rhs}", (pos != negated)
+
+    @staticmethod
+    def _dnf_eval(dnf: List[List[Tuple[str, bool]]], env: Dict[str, bool]) -> bool:
+        for conj in dnf:
+            if all(env.get(a, False) == p for a, p in conj):
+                return True
+        return False
+
+    @classmethod
+    def _multi_guard_is_negation(
+        cls,
+        guard_list: List[List[List[Tuple[str, bool]]]],
+        exit_guard: List[List[Tuple[str, bool]]],
+    ) -> bool:
+        """True iff exit_guard == NOT (all guards in guard_list hold),
+        checked exhaustively over the atoms involved (>12 atoms -> False)."""
+        atoms = set()
+        for g in guard_list:
+            for conj in g:
+                atoms.update(a for a, _ in conj)
+        for conj in exit_guard:
+            atoms.update(a for a, _ in conj)
+        atoms = sorted(atoms)
+        if not atoms or len(atoms) > 12:
+            return False
+        for mask in range(1 << len(atoms)):
+            env = {a: bool(mask >> i & 1) for i, a in enumerate(atoms)}
+            conj_all = all(cls._dnf_eval(g, env) for g in guard_list)
+            if cls._dnf_eval(exit_guard, env) == conj_all:
+                return False
+        return True
+
+    @staticmethod
+    def _tarjan_scc(
+        nodes: List[str],
+        out_adj: Dict[str, List[int]],
+        edges: List[Dict[str, Any]],
+    ) -> List[List[str]]:
+        indices: Dict[str, int] = {}
+        lowlink: Dict[str, int] = {}
+        on_stack: Dict[str, bool] = {}
+        stack: List[str] = []
+        result: List[List[str]] = []
+        counter = [0]
+
+        def strongconnect(v: str) -> None:
+            work = [(v, 0)]
+            while work:
+                node, pi = work[-1]
+                if pi == 0:
+                    indices[node] = counter[0]
+                    lowlink[node] = counter[0]
+                    counter[0] += 1
+                    stack.append(node)
+                    on_stack[node] = True
+                recurse = False
+                succs = [edges[ei]["dst"] for ei in out_adj[node]]
+                for i in range(pi, len(succs)):
+                    w = succs[i]
+                    if w not in indices:
+                        work[-1] = (node, i + 1)
+                        work.append((w, 0))
+                        recurse = True
+                        break
+                    elif on_stack.get(w):
+                        lowlink[node] = min(lowlink[node], indices[w])
+                if recurse:
+                    continue
+                if lowlink[node] == indices[node]:
+                    comp = []
+                    while True:
+                        w = stack.pop()
+                        on_stack[w] = False
+                        comp.append(w)
+                        if w == node:
+                            break
+                    result.append(comp)
+                work.pop()
+                if work:
+                    parent = work[-1][0]
+                    lowlink[parent] = min(lowlink[parent], lowlink[node])
+
+        for n in nodes:
+            if n not in indices:
+                strongconnect(n)
+        return result
+
+    @staticmethod
+    def _simple_cycles_in_scc(
+        members: List[str],
+        out_adj: Dict[str, List[int]],
+        edges: List[Dict[str, Any]],
+        cap: int = 256,
+    ) -> Tuple[List[Tuple[int, ...]], bool]:
+        """Enumerates simple directed cycles inside one SCC.
+
+        Each cycle is a tuple of edge indices.  Returns (cycles,
+        overflowed): enumeration is capped; on overflow the SCC-level
+        livelock witness still applies and the caller records a
+        limitation.
+        """
+        member_set = set(members)
+        order = {n: i for i, n in enumerate(members)}
+        cycles: List[Tuple[int, ...]] = []
+        overflow = [False]
+
+        def dfs(start: str, current: str, visited: set, path: List[int]) -> None:
+            if overflow[0]:
+                return
+            for ei in out_adj[current]:
+                dst = edges[ei]["dst"]
+                if dst not in member_set:
+                    continue
+                if dst == start:
+                    cycles.append(tuple(path + [ei]))
+                    if len(cycles) >= cap:
+                        overflow[0] = True
+                        return
+                elif dst not in visited and order[dst] >= order[start]:
+                    visited.add(dst)
+                    path.append(ei)
+                    dfs(start, dst, visited, path)
+                    path.pop()
+                    visited.remove(dst)
+
+        for s in members:
+            dfs(s, s, {s}, [])
+            if overflow[0]:
+                break
+        return cycles, overflow[0]
+
     @classmethod
     def _compile_agent_graph_json(cls, data: Dict[str, Any]) -> Dict[str, Any]:
-        """Deterministically compiles a LangGraph / Dify Workflow JSON into k-CNF clauses."""
-        nodes = data.get("nodes", [])
-        edges = data.get("edges", [])
-        var_map: Dict[str, int] = {}
+        """Compiles a LangGraph / Dify workflow graph into an exact
+        trap-counting CNF (see the semantics note above)."""
+        raw_nodes = data.get("nodes", [])
+        raw_edges = data.get("edges", [])
+
+        node_order: List[str] = []
+        node_terminal: Dict[str, bool] = {}
+
+        def note_node(nid: str, terminal: bool = False) -> None:
+            if nid not in node_terminal:
+                node_order.append(nid)
+                node_terminal[nid] = terminal
+            elif terminal:
+                node_terminal[nid] = True
+
+        def is_terminal_decl(nd: Any, nid: str) -> bool:
+            if isinstance(nd, dict):
+                if nd.get("terminal") is True or nd.get("is_terminal") is True:
+                    return True
+                if str(nd.get("type", "")).lower() in {"end", "terminal", "final"}:
+                    return True
+            return nid.lower() in {"end", "__end__", "finish", "done", "final"}
+
+        for nd in raw_nodes:
+            if isinstance(nd, dict):
+                nid = str(nd.get("id") or nd.get("name") or nd.get("key") or "")
+            else:
+                nid = str(nd)
+            if nid:
+                note_node(nid, is_terminal_decl(nd, nid))
+        for t in data.get("terminals", []) or data.get("terminal_nodes", []) or []:
+            note_node(str(t), True)
+
+        edges: List[Dict[str, Any]] = []
+        declared_entries: List[str] = []
+        for ed in raw_edges:
+            if isinstance(ed, (list, tuple)) and len(ed) >= 2:
+                src, dst, cond = str(ed[0]), str(ed[1]), None
+            elif isinstance(ed, dict):
+                src = str(ed.get("source") or ed.get("from") or ed.get("src") or ed.get("u") or "")
+                dst = str(ed.get("target") or ed.get("to") or ed.get("dst") or ed.get("v") or "")
+                cond = ed.get("condition", ed.get("guard", ed.get("when")))
+            else:
+                continue
+            if not src or not dst:
+                continue
+            if src == "__start__":
+                declared_entries.append(dst)
+                note_node(dst)
+                continue
+            note_node(src)
+            note_node(dst, dst == "__end__")
+            edges.append({"src": src, "dst": dst, "guard": cls._guard_dnf(cond)})
+
+        log = ["[Agent Graph Parser] Parsed workflow topology JSON."]
+        if not node_order:
+            raise ValueError("Agent graph has no nodes.")
+        if len(node_order) == 1 and not edges:
+            node_terminal[node_order[0]] = True
+
+        # Terminal nodes are absorbing: execution never leaves a
+        # terminal, so terminal out-edges cannot create or escape a
+        # trap and do not propagate execution reachability.  They are
+        # excluded from the trap encoding (the full edge list is still
+        # reported in graph_analysis).
+        dropped_terminal_edges = sum(
+            1 for e in edges if node_terminal.get(e["src"])
+        )
+        out_adj: Dict[str, List[int]] = {n: [] for n in node_order}
+        in_adj: Dict[str, List[int]] = {n: [] for n in node_order}
+        for ei, e in enumerate(edges):
+            if node_terminal.get(e["src"]):
+                continue
+            out_adj[e["src"]].append(ei)
+            in_adj[e["dst"]].append(ei)
+
+        entries: List[str] = []
+        entry_decl = data.get("entry") or data.get("start") or data.get("entry_node")
+        if entry_decl:
+            entries = [str(entry_decl)]
+            note_node(entries[0])
+            out_adj.setdefault(entries[0], [])
+            in_adj.setdefault(entries[0], [])
+        for d in declared_entries:
+            if d not in entries:
+                entries.append(d)
+        if not entries:
+            entries = [n for n in node_order if not in_adj[n]]
+        if not entries:
+            entries = [node_order[0]]
+            log.append(f"[Agent Graph Parser] No entry node found; assuming '{node_order[0]}' is the entry.")
+        entry_set = set(entries)
+
+        sccs = cls._tarjan_scc(node_order, out_adj, edges)
+        scc_of: Dict[str, int] = {}
+        for si, comp in enumerate(sccs):
+            for n in comp:
+                scc_of[n] = si
+
+        def kind(ei: int) -> str:
+            g = edges[ei]["guard"]
+            if g == [[]]:
+                return "always"
+            if g == []:
+                return "never"
+            return "conditional"
+
+        # ---------------- structural analysis ----------------
+        findings: List[Dict[str, Any]] = []
+        reachable_struct = set(entries)
+        stack = list(entries)
+        while stack:
+            cur = stack.pop()
+            for ei in out_adj[cur]:
+                d = edges[ei]["dst"]
+                if d not in reachable_struct:
+                    reachable_struct.add(d)
+                    stack.append(d)
+
+        cyclic_sccs: List[int] = []
+        for si, comp in enumerate(sccs):
+            has_self = len(comp) == 1 and any(
+                edges[ei]["src"] == edges[ei]["dst"] for ei in out_adj[comp[0]]
+            )
+            if len(comp) > 1 or has_self:
+                cyclic_sccs.append(si)
+                exits = [
+                    ei
+                    for n in comp
+                    for ei in out_adj[n]
+                    if edges[ei]["dst"] not in comp
+                ]
+                if not exits:
+                    findings.append(
+                        {
+                            "type": "exitless_cycle",
+                            "severity": "high",
+                            "nodes": sorted(comp),
+                            "detail": "Strongly connected region with no outgoing edge: once entered, the workflow can never leave it.",
+                        }
+                    )
+                else:
+                    findings.append(
+                        {
+                            "type": "cycle_with_exit",
+                            "severity": "info",
+                            "nodes": sorted(comp),
+                            "detail": "Cycle with exit edges; it is a livelock trap exactly under the guard assignments counted by #F.",
+                        }
+                    )
+        for n in node_order:
+            if not node_terminal[n] and not out_adj[n] and len(node_order) > 1:
+                findings.append(
+                    {
+                        "type": "dead_end",
+                        "severity": "high",
+                        "nodes": [n],
+                        "detail": f"Node '{n}' has no outgoing edges and is not marked terminal: executions reaching it halt without completing.",
+                    }
+                )
+            if n not in reachable_struct:
+                findings.append(
+                    {
+                        "type": "unreachable_node",
+                        "severity": "medium",
+                        "nodes": [n],
+                        "detail": f"Node '{n}' is not reachable from any entry node.",
+                    }
+                )
+
+        # ---------------- trap candidates ----------------
+        # Degenerate case: a graph consisting of a single node with no
+        # edges is a complete (empty) workflow - the node is trivially
+        # its own end, never a trap.
+        degenerate_single = len(node_order) == 1 and not edges
+        stuck_candidates: List[str] = []
+        for n in node_order:
+            if node_terminal[n] or degenerate_single:
+                continue
+            outs = out_adj[n]
+            if not outs:
+                stuck_candidates.append(n)
+            elif all(kind(ei) != "always" for ei in outs):
+                stuck_candidates.append(n)
+
+        cycles_by_scc: Dict[int, List[Tuple[int, ...]]] = {}
+        cycle_overflow = False
+        for si in cyclic_sccs:
+            comp = sccs[si]
+            if len(comp) <= 10:
+                cyc, ov = cls._simple_cycles_in_scc(comp, out_adj, edges)
+                cycles_by_scc[si] = cyc
+                cycle_overflow = cycle_overflow or ov
+            else:
+                cycles_by_scc[si] = []
+                cycle_overflow = True
+
+        def cycle_members(cyc: Tuple[int, ...]) -> set:
+            ms = set()
+            for ei in cyc:
+                ms.add(edges[ei]["src"])
+                ms.add(edges[ei]["dst"])
+            return ms
+
+        def cycle_exit_eis(cyc: Tuple[int, ...]) -> List[int]:
+            ms = cycle_members(cyc)
+            return [
+                ei
+                for n in ms
+                for ei in out_adj[n]
+                if edges[ei]["dst"] not in ms
+            ]
+
+        trap_cycles: List[Tuple[int, ...]] = []
+        guarded_cycles = 0
+        for si in cyclic_sccs:
+            for cyc in cycles_by_scc.get(si, []):
+                if any(kind(ei) == "never" for ei in cyc):
+                    continue  # a never-enabled cycle edge: cycle cannot run
+                exits = cycle_exit_eis(cyc)
+                if any(kind(ei) == "always" for ei in exits):
+                    continue  # an always-on exit can never be disabled
+                if any(
+                    cls._multi_guard_is_negation([edges[x]["guard"] for x in cyc], edges[ei]["guard"])
+                    for ei in exits
+                ):
+                    guarded_cycles += 1
+                    continue
+                trap_cycles.append(cyc)
+        if guarded_cycles:
+            findings.append(
+                {
+                    "type": "guarded_cycle",
+                    "severity": "info",
+                    "nodes": [],
+                    "detail": f"{guarded_cycles} cycle(s) have an exit guard that is the exact logical complement of the cycle guard (bounded-retry pattern) and are excluded from trap counting.",
+                }
+            )
+
+        trap_sccs: List[int] = []
+        for si in cyclic_sccs:
+            comp = set(sccs[si])
+            exits = [
+                ei
+                for n in comp
+                for ei in out_adj[n]
+                if edges[ei]["dst"] not in comp
+            ]
+            if any(kind(ei) == "always" for ei in exits):
+                continue
+            single = [
+                c
+                for c in trap_cycles
+                if cycle_members(c) == comp
+            ]
+            if single and len(cycles_by_scc.get(si, [])) == 1:
+                continue  # already witnessed precisely by its only cycle
+            internal = [
+                ei for n in comp for ei in out_adj[n] if edges[ei]["dst"] in comp
+            ]
+            if any(
+                cls._multi_guard_is_negation([edges[x]["guard"] for x in internal], edges[ei]["guard"])
+                for ei in exits
+            ):
+                continue  # bounded-retry exemption at region level
+            trap_sccs.append(si)
+
+        # ---------------- relevance closure ----------------
+        seeds = set(stuck_candidates)
+        for si in trap_sccs:
+            seeds.update(sccs[si])
+        for cyc in trap_cycles:
+            seeds.update(cycle_members(cyc))
+        relevant = set(seeds)
+        rev_adj: Dict[str, List[str]] = {n: [] for n in node_order}
+        for e in edges:
+            rev_adj[e["dst"]].append(e["src"])
+        stack = list(seeds)
+        while stack:
+            cur = stack.pop()
+            for pre in rev_adj[cur]:
+                if pre not in relevant:
+                    relevant.add(pre)
+                    stack.append(pre)
+        relevant_entries = [n for n in entries if n in relevant]
+
+        # ---------------- variable allocation ----------------
         var_list: List[Dict[str, Any]] = []
+        var_index: Dict[str, int] = {}
+
+        def new_var(name: str, label: str, category: str, prior: float = 0.5) -> int:
+            if name in var_index:
+                return var_index[name]
+            idx = len(var_list) + 1
+            var_index[name] = idx
+            var_list.append({"name": name, "label": label, "prior": prior, "category": category})
+            return idx
+
+        atom_var: Dict[str, int] = {}
+        for e in edges:
+            if node_terminal.get(e["src"]):
+                continue  # dead edge (terminal source): its conditions
+                # are not part of the execution state space
+            for conj in e["guard"]:
+                for atom, _pos in conj:
+                    if atom not in atom_var:
+                        slug = re.sub(r"[^a-zA-Z0-9]+", "_", atom).strip("_")[:40] or "cond"
+                        atom_var[atom] = new_var(
+                            f"cond_{slug}_{len(atom_var)}",
+                            f"Condition: {atom}",
+                            "Edge Guard Condition",
+                        )
+
+        r_var = {
+            n: new_var(f"reach_{n}", f"Reachable: {n}", "Encoding: Reachability")
+            for n in node_order
+            if n in relevant
+        }
+        s_var = {
+            n: new_var(f"stuck_{n}", f"Stuck witness: {n}", "Encoding: Trap Witness")
+            for n in stuck_candidates
+            if n in relevant
+        }
+        t_var = new_var("trap_exists", "A trap assignment holds", "Encoding: Trap Witness")
+        witness_vars: Dict[str, str] = {}
+        for n, sv in s_var.items():
+            witness_vars[var_list[sv - 1]["name"]] = (
+                f"Deadlock at node '{n}': reachable with every outgoing edge disabled"
+            )
+
+        clause_pairs: List[Tuple[List[int], str]] = []
+
+        # guard "enabled" term per edge: None = always true,
+        # False = never enabled, otherwise a DIMACS literal int.
+        en_term: Dict[int, Any] = {}
+
+        def lit_of(atom: str, pos: bool) -> int:
+            v = atom_var[atom]
+            return v if pos else -v
+
+        for ei, e in enumerate(edges):
+            if node_terminal.get(e["src"]):
+                en_term[ei] = False
+                continue
+            dnf = e["guard"]
+            if dnf == [[]]:
+                en_term[ei] = None
+                continue
+            if dnf == []:
+                en_term[ei] = False
+                continue
+            if len(dnf) == 1 and len(dnf[0]) == 1:
+                a, p = dnf[0][0]
+                en_term[ei] = lit_of(a, p)
+                continue
+            g = new_var(
+                f"guard_edge_{ei}",
+                f"Guard of edge {e['src']} -> {e['dst']}",
+                "Encoding: Guard",
+            )
+            en_term[ei] = g
+            disjunct_lits = [[lit_of(a, p) for a, p in conj] for conj in dnf]
+            for dl in disjunct_lits:
+                clause_pairs.append(
+                    ([-x for x in dl] + [g], f"Guard definition: {e['src']} -> {e['dst']}")
+                )
+            picks: List[List[int]] = [[]]
+            for dl in disjunct_lits:
+                picks = [pk + [x] for pk in picks for x in dl]
+            for pk in picks:
+                clause_pairs.append(([-g] + pk, f"Guard definition: {e['src']} -> {e['dst']}"))
+
+        def en_lit(ei: int) -> Optional[int]:
+            """Enabled literal for edge ei, or None if unconditionally on.
+            Callers must skip edges whose en_term is False beforehand."""
+            t = en_term[ei]
+            return None if t is None else int(t)
+
+        # ---------------- reachability (canonical supports) ----------------
+        w_var: Dict[int, int] = {}
+        supports_of: Dict[str, List[int]] = {}
+        for n in node_order:
+            if n not in r_var or n in entry_set:
+                continue
+            cand = []
+            for ei in in_adj[n]:
+                if edges[ei]["src"] == n:
+                    continue
+                if en_term[ei] is False:
+                    continue
+                cand.append(ei)
+            cand.sort(key=lambda ei: 0 if scc_of[edges[ei]["src"]] != scc_of[n] else 1)
+            supports_of[n] = cand
+            for ei in cand:
+                w_var[ei] = new_var(
+                    f"support_edge_{ei}",
+                    f"Support: {edges[ei]['src']} -> {n}",
+                    "Encoding: Reachability Support",
+                )
+
+        for n in relevant_entries:
+            clause_pairs.append(([r_var[n]], f"Entry node '{n}' is reachable"))
+        for n, cand in supports_of.items():
+            rv = r_var[n]
+            if cand:
+                clause_pairs.append(
+                    ([-rv] + [w_var[ei] for ei in cand], f"Reachability of '{n}' needs a supporting edge")
+                )
+            else:
+                clause_pairs.append(([-rv], f"Node '{n}' has no supporting edge and is unreachable"))
+            for pos_i, ei in enumerate(cand):
+                w = w_var[ei]
+                src = edges[ei]["src"]
+                en = en_lit(ei)
+                if en is not None:
+                    clause_pairs.append(([-w, en], f"Support {src} -> {n} requires its guard"))
+                clause_pairs.append(([-w, r_var[src]], f"Support {src} -> {n} requires '{src}' reachable"))
+                clause_pairs.append(([-w, rv], f"Support {src} -> {n} establishes '{n}'"))
+                # canonical-first: w_i requires every earlier support ineligible
+                for pj in range(pos_i):
+                    ej = cand[pj]
+                    enj = en_lit(ej)
+                    cl = [-w, -r_var[edges[ej]["src"]]]
+                    if enj is not None:
+                        cl = [-w, -enj, -r_var[edges[ej]["src"]]]
+                    clause_pairs.append((cl, f"Canonical support for '{n}': earlier edge must be ineligible"))
+                # forcing: eligible + target reached + earlier ineligible -> w_i
+                combos: List[List[int]] = [[]]
+                for pj in range(pos_i):
+                    ej = cand[pj]
+                    enj = en_lit(ej)
+                    opts = [r_var[edges[ej]["src"]]]
+                    if enj is not None:
+                        opts.append(enj)
+                    combos = [c + [o] for c in combos for o in opts]
+                for combo in combos:
+                    cl = []
+                    if en is not None:
+                        cl.append(-en)
+                    cl += [-r_var[src]] + combo + [w]
+                    clause_pairs.append((cl, f"Canonical support for '{n}' via {src} -> {n}"))
+
+        # grounding: a simple cycle without an entry member can only be
+        # fully reachable if an enabled edge enters it from outside.
+        all_cycles: List[Tuple[int, ...]] = []
+        for si in cyclic_sccs:
+            all_cycles.extend(cycles_by_scc.get(si, []))
+        seen_ground: set = set()
+        for cyc in all_cycles:
+            members = cycle_members(cyc)
+            key = frozenset(members)
+            if key in seen_ground or members & entry_set:
+                continue
+            seen_ground.add(key)
+            cl = [-r_var[m] for m in sorted(members) if m in r_var]
+            if not cl:
+                continue
+            for m in sorted(members):
+                for ei in in_adj[m]:
+                    if edges[ei]["src"] in members or en_term[ei] is False:
+                        continue
+                    a_name = f"cycle_entry_{ei}"
+                    av = new_var(a_name, f"Cycle entry via {edges[ei]['src']} -> {m}", "Encoding: Grounding")
+                    en = en_lit(ei)
+                    if en is not None:
+                        clause_pairs.append(([-av, en], "Cycle entry requires its guard"))
+                    clause_pairs.append(([-av, r_var[edges[ei]["src"]]], "Cycle entry requires source reachable"))
+                    back = [-r_var[edges[ei]["src"]], av]
+                    if en is not None:
+                        back = [-en, -r_var[edges[ei]["src"]], av]
+                    clause_pairs.append((back, "Cycle entry definition"))
+                    cl.append(av)
+            clause_pairs.append((cl, f"Grounding: cycle {sorted(members)} needs an entry from outside"))
+
+        # ---------------- stuck witnesses ----------------
+        trap_witness_vars: List[int] = list(s_var.values())
+        for n, sv in s_var.items():
+            clause_pairs.append(([-sv, r_var[n]], f"Stuck witness '{n}' requires reachability"))
+            live_lits: List[int] = []
+            for ei in out_adj[n]:
+                if en_term[ei] is False:
+                    continue
+                en = en_lit(ei)
+                if en is not None:
+                    live_lits.append(en)
+                    clause_pairs.append(
+                        ([-sv, -en], f"Stuck witness '{n}' requires edge {edges[ei]['src']} -> {edges[ei]['dst']} disabled")
+                    )
+            back = [-r_var[n]] + live_lits + [sv]
+            clause_pairs.append((back, f"Node '{n}' is stuck when reached with all exits disabled"))
+
+        # ---------------- livelock witnesses: simple cycles ----------------
+        def add_cycle_witness(cyc: Tuple[int, ...]) -> None:
+            members: List[str] = []
+            for ei in cyc:
+                if edges[ei]["src"] not in members:
+                    members.append(edges[ei]["src"])
+            cv = new_var(
+                f"livelock_{len(trap_witness_vars)}_{'_'.join(members)[:32]}",
+                f"Livelock witness: cycle {' -> '.join(members)}",
+                "Encoding: Trap Witness",
+            )
+            witness_vars[var_list[cv - 1]["name"]] = (
+                f"Livelock on cycle {' -> '.join(members)}: reachable, cycle edges enabled, all exits disabled"
+            )
+            trap_witness_vars.append(cv)
+            clause_pairs.append(
+                ([-cv] + [r_var[m] for m in members if m in r_var], "Livelock cycle requires a reached member")
+            )
+            for ei in cyc:
+                en = en_lit(ei)
+                if en is not None:
+                    clause_pairs.append(([-cv, en], "Livelock cycle requires its edges enabled"))
+            exits = cycle_exit_eis(cyc)
+            exit_lits: List[int] = []
+            for ei in exits:
+                if en_term[ei] is False:
+                    continue
+                en = en_lit(ei)
+                exit_lits.append(en)
+                clause_pairs.append(([-cv, -en], "Livelock cycle requires exit disabled"))
+            for m in members:
+                if m not in r_var:
+                    continue
+                back = [-r_var[m]]
+                back += [-en_lit(ei) for ei in cyc if en_lit(ei) is not None]
+                back += exit_lits
+                back += [cv]
+                clause_pairs.append((back, f"Livelock cycle forms when '{m}' is reached"))
+
+        for cyc in trap_cycles:
+            add_cycle_witness(cyc)
+
+        # ---------------- livelock witnesses: SCC regions ----------------
+        scc_witness_skipped = False
+        for si in trap_sccs:
+            comp = list(sccs[si])
+            comp_set = set(comp)
+            exits = [
+                ei
+                for n in comp
+                for ei in out_adj[n]
+                if edges[ei]["dst"] not in comp_set
+            ]
+            exit_lits = [
+                en_lit(ei) for ei in exits if en_term[ei] is not False and en_term[ei] is not None
+            ]
+            # Per-member progress condition: a member only needs an
+            # enabled internal edge when it is actually reached under
+            # the assignment (unreached members cannot block the trap).
+            # D_m = (not reached) OR (some internal edge enabled); a
+            # member with an unconditional internal edge is unconstrained.
+            member_opts: List[Optional[List[int]]] = []
+            feasible = True
+            for n in comp:
+                opts: List[int] = []
+                has_uncond = False
+                for ei in out_adj[n]:
+                    if edges[ei]["dst"] not in comp_set or en_term[ei] is False:
+                        continue
+                    en = en_lit(ei)
+                    if en is None:
+                        has_uncond = True
+                    else:
+                        opts.append(en)
+                if has_uncond:
+                    member_opts.append(None)
+                elif n in r_var:
+                    member_opts.append([-r_var[n]] + opts)
+                elif opts:
+                    member_opts.append(opts)
+                else:
+                    feasible = False
+                    break
+            if not feasible:
+                continue
+            # exact converse via distribution; cap the clause product
+            disjuncts: List[List[int]] = []
+            disjuncts.append([r_var[m] for m in comp if m in r_var])
+            for opts in member_opts:
+                if opts:
+                    disjuncts.append(opts)
+            combos = 1
+            for d in disjuncts:
+                combos *= max(1, len(d))
+            if combos > 512:
+                scc_witness_skipped = True
+                continue
+            cv = new_var(
+                f"livelock_scc_{si}",
+                f"Livelock witness: region {', '.join(comp)}",
+                "Encoding: Trap Witness",
+            )
+            witness_vars[var_list[cv - 1]["name"]] = (
+                f"Livelock in region {comp}: reached, every member keeps an enabled internal edge, all exits disabled"
+            )
+            trap_witness_vars.append(cv)
+            clause_pairs.append(
+                ([-cv] + [r_var[m] for m in comp if m in r_var], "Livelock region requires a reached member")
+            )
+            for opts in member_opts:
+                if opts:
+                    clause_pairs.append(([-cv] + opts, "Livelock region: every reached member keeps an enabled internal edge"))
+            for ei in exits:
+                if en_term[ei] is False or en_term[ei] is None:
+                    continue
+                clause_pairs.append(([-cv, -en_lit(ei)], "Livelock region requires exit disabled"))
+            picks: List[List[int]] = [[]]
+            for d in disjuncts:
+                picks = [pk + [-x] for pk in picks for x in d]
+            for pk in picks:
+                clause_pairs.append((pk + exit_lits + [cv], "Livelock region forms"))
+
+        # ---------------- trap master variable ----------------
+        clause_pairs.append(([t_var], "Count only trap assignments"))
+        if trap_witness_vars:
+            clause_pairs.append(
+                ([-t_var] + trap_witness_vars, "A trap requires a deadlock or livelock witness")
+            )
+            for tv in trap_witness_vars:
+                clause_pairs.append(([-tv, t_var], "Witness implies trap"))
+        else:
+            clause_pairs.append(([-t_var], "No trap is possible in this graph"))
+
+        # ---------------- dedupe ----------------
+        seen: set = set()
         clauses: List[List[int]] = []
         clause_descs: List[str] = []
-        log = ["[Agent Graph Parser] Parsed workflow topology JSON."]
+        for cl, desc in clause_pairs:
+            key = tuple(sorted(set(cl)))
+            if not key or key in seen:
+                continue
+            seen.add(key)
+            clauses.append(list(key))
+            clause_descs.append(desc)
 
-        def add_var(name: str, label: str, prior: float = 0.6) -> int:
-            clean = re.sub(r"[^a-zA-Z0-9_]", "_", name.lower()).strip("_")
-            if clean not in var_map:
-                idx = len(var_list) + 1
-                var_map[clean] = idx
-                var_list.append({"name": clean, "label": label, "prior": prior, "category": "Agent Node/Edge"})
-            return var_map[clean]
-
-        for nd in nodes:
-            nid = nd.get("id", str(nd)) if isinstance(nd, dict) else str(nd)
-            add_var(f"node_{nid}", f"Node: {nid}", 0.7)
-
-        for ed in edges:
-            if isinstance(ed, dict):
-                src = str(ed.get("source") or ed.get("from") or "start")
-                dst = str(ed.get("target") or ed.get("to") or "end")
-                u = add_var(f"node_{src}", f"Node: {src}", 0.75)
-                v = add_var(f"node_{dst}", f"Node: {dst}", 0.75)
-                clauses.append([-u, v])
-                clause_descs.append(f"Transition Edge: {src} -> {dst}")
-
-        # Add 4 context variables for state space coverage
-        for k in range(1, 5):
-            add_var(f"agent_context_flag_{k}", f"Session Context Flag #{k}", 0.5)
-
-        if clauses:
-            clauses.append([1])
-            clause_descs.append("Entry Trigger: Entry node activated")
+        if len(var_list) > 64:
+            raise ValueError(
+                f"Agent graph encoding needs {len(var_list)} variables "
+                f"(condition atoms + reachability encoding), exceeding the engine limit MAX_VARS=64. "
+                "Simplify the graph or split it into subgraphs."
+            )
 
         var_names = [v["name"] for v in var_list]
+        limitations: List[str] = []
+        if cycle_overflow:
+            limitations.append(
+                "Cycle enumeration inside a large strongly connected region hit the safety cap; "
+                "region-level livelock witnesses still apply, but some simple-cycle witnesses may be missing."
+            )
+        if dropped_terminal_edges:
+            limitations.append(
+                "Edges out of terminal nodes are ignored in trap analysis: "
+                "terminals are absorbing end states."
+            )
+        if scc_witness_skipped:
+            limitations.append(
+                "One strongly connected region was too large for the exact region-level livelock "
+                "witness (clause-product cap); its simple-cycle witnesses still apply."
+            )
+        limitations.append(
+            "Reachability grounding is exact for cycles entered from outside the cycle; mutually "
+            "feeding cycle tangles inside one SCC that are disconnected from every entry are also "
+            "reported as unreachable_node findings."
+        )
+        analysis = {
+            "entries": entries,
+            "terminals": sorted(n for n in node_order if node_terminal[n]),
+            "nodes": node_order,
+            "edges": [
+                {"from": e["src"], "to": e["dst"], "guard": e["guard"]} for e in edges
+            ],
+            "condition_variables": sorted(atom_var.keys()),
+            "sccs": [sorted(c) for c in sccs],
+            "findings": findings,
+            "stuck_candidates": stuck_candidates,
+            "limitations": limitations,
+            "trap_semantics": (
+                "#F counts condition assignments under which a reachable non-terminal node is "
+                "deadlocked (all outgoing edges disabled) or a cycle/region is reachable with its "
+                "cycle edges enabled and all of its exits disabled (livelock). Guarded cycles whose "
+                "exit guard is the exact complement of the cycle guard are excluded."
+            ),
+        }
+        log.append(
+            f"[Agent Graph Parser] Encoded {len(atom_var)} condition variables over "
+            f"{len(node_order)} nodes / {len(edges)} edges into an exact trap-counting CNF "
+            f"({len(var_list)} vars, {len(clauses)} clauses)."
+        )
         return {
             "num_vars": len(var_list),
             "variables": var_list,
             "clauses": clauses,
             "clause_descriptions": clause_descs,
             "pretty_clauses": [cls.format_clause_math(c, var_names) for c in clauses],
-            "dimacs": cls.to_dimacs(len(var_list), clauses, "Agent Workflow Formal Audit"),
+            "dimacs": cls.to_dimacs(len(var_list), clauses, "Agent Workflow Trap Audit"),
             "self_correction_log": log,
+            "graph_analysis": analysis,
+            "witness_vars": witness_vars,
         }
 
     @classmethod
@@ -267,15 +1151,19 @@ class Autoformalizer:
         """
         stripped = raw_text.strip()
         if stripped.startswith("{"):
+            parsed_json = None
             try:
                 parsed_json = json.loads(stripped)
-                if isinstance(parsed_json, dict):
-                    if "Statement" in parsed_json:
-                        return cls._compile_aws_iam_json(parsed_json)
-                    if "nodes" in parsed_json or "edges" in parsed_json:
-                        return cls._compile_agent_graph_json(parsed_json)
             except Exception:
-                pass
+                parsed_json = None
+            if isinstance(parsed_json, dict):
+                if "Statement" in parsed_json:
+                    return cls._compile_aws_iam_json(parsed_json)
+                if "nodes" in parsed_json or "edges" in parsed_json:
+                    # Compile errors (e.g. the encoding exceeds the
+                    # engine's MAX_VARS limit) propagate loudly instead
+                    # of silently degrading to a text-mode analysis.
+                    return cls._compile_agent_graph_json(parsed_json)
 
         llm_compiled = cls._try_llm_autoformalize(raw_text, api_key_override=api_key_override)
         if llm_compiled is not None:

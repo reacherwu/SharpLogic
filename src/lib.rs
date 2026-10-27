@@ -151,12 +151,81 @@ fn unit_propagate(
     Ok(active)
 }
 
+/// Canonical memoization key for a DPLL subproblem: the clause list,
+/// the component variable set, and the incoming assignment restricted
+/// to variables that can influence the result.  `dpll_component` is a
+/// pure function of these inputs (weights are fixed per solve), so
+/// caching its result is exact.
+fn subproblem_key(
+    clauses: &[Clause],
+    comp_vars: &[usize],
+    assign: &[i8; MAX_VARS],
+) -> Vec<u8> {
+    // A reduced clause is fully determined by its original index plus
+    // the incoming assignment (unit propagation only strips literals
+    // falsified by that assignment), so the key needs the sorted index
+    // multiset, the component variables, and the assignment restricted
+    // to variables appearing in the clauses or the component.
+    let mut idxs: Vec<u32> = clauses.iter().map(|c| c.original_idx as u32).collect();
+    idxs.sort_unstable();
+    let mut key = Vec::with_capacity(32 + idxs.len() * 4 + comp_vars.len());
+    for i in idxs {
+        key.extend_from_slice(&i.to_le_bytes());
+    }
+    key.push(0xFE);
+    let mut cvs: Vec<usize> = comp_vars.to_vec();
+    cvs.sort_unstable();
+    for &v in &cvs {
+        key.push(v as u8);
+    }
+    key.push(0xFD);
+    let mut relevant: Vec<bool> = vec![false; MAX_VARS];
+    for c in clauses {
+        for &lit in &c.lits {
+            relevant[(lit.abs() as usize) - 1] = true;
+        }
+    }
+    for &v in comp_vars {
+        relevant[v] = true;
+    }
+    for v in 0..MAX_VARS {
+        if relevant[v] {
+            key.push((assign[v] + 1) as u8);
+        }
+    }
+    key
+}
+
 /// Exact DPLL Model Counter & MPE Ghost Path Extractor for a single connected component
 fn dpll_component(
     clauses: &[Clause],
     comp_vars: &[usize],
     assign: &[i8; MAX_VARS],
     weights: &[f64],
+    cache: &mut std::collections::HashMap<Vec<u8>, SubProblemResult>,
+) -> SubProblemResult {
+    let key = if clauses.len() >= 32 {
+        let k = subproblem_key(clauses, comp_vars, assign);
+        if let Some(hit) = cache.get(&k) {
+            return hit.clone();
+        }
+        Some(k)
+    } else {
+        None
+    };
+    let result = dpll_component_inner(clauses, comp_vars, assign, weights, cache);
+    if let Some(k) = key {
+        cache.insert(k, result.clone());
+    }
+    result
+}
+
+fn dpll_component_inner(
+    clauses: &[Clause],
+    comp_vars: &[usize],
+    assign: &[i8; MAX_VARS],
+    weights: &[f64],
+    cache: &mut std::collections::HashMap<Vec<u8>, SubProblemResult>,
 ) -> SubProblemResult {
     let mut local_assign = *assign;
     let mut dummy_pow2 = 0u32;
@@ -225,6 +294,94 @@ fn dpll_component(
         };
     }
 
+    // Dynamic component decomposition: if the residual formula splits
+    // into independent variable groups, solve each group separately
+    // and multiply (this is where structured formulas - workflow trap
+    // encodings, diamonds, pipelines - gain orders of magnitude).
+    if reduced.len() >= 6 {
+        let mut parent: Vec<usize> = (0..remaining_vars.len()).collect();
+        fn find(parent: &mut Vec<usize>, mut x: usize) -> usize {
+            while parent[x] != x {
+                parent[x] = parent[parent[x]];
+                x = parent[x];
+            }
+            x
+        }
+        let mut pos_of = [usize::MAX; MAX_VARS];
+        for (i, &v) in remaining_vars.iter().enumerate() {
+            pos_of[v] = i;
+        }
+        for cl in &reduced {
+            let first = (cl.lits[0].abs() as usize) - 1;
+            for &lit in &cl.lits[1..] {
+                let other = (lit.abs() as usize) - 1;
+                let ra = find(&mut parent, pos_of[first]);
+                let rb = find(&mut parent, pos_of[other]);
+                if ra != rb {
+                    parent[ra] = rb;
+                }
+            }
+        }
+        let mut groups: std::collections::HashMap<usize, Vec<usize>> =
+            std::collections::HashMap::new();
+        for (i, &v) in remaining_vars.iter().enumerate() {
+            let r = find(&mut parent, i);
+            groups.entry(r).or_default().push(v);
+        }
+        if groups.len() > 1 {
+            let mut group_list: Vec<Vec<usize>> = groups.into_values().collect();
+            group_list.sort_by_key(|g| g[0]);
+            let mut total_count: u128 = 1 << free_count;
+            let mut total_wmc = unit_wmc;
+            let mut total_best = unit_best_w;
+            let mut chosen = local_assign;
+            for group in &group_list {
+                let gset: Vec<bool> = {
+                    let mut s = vec![false; MAX_VARS];
+                    for &v in group {
+                        s[v] = true;
+                    }
+                    s
+                };
+                let gclauses: Vec<Clause> = reduced
+                    .iter()
+                    .filter(|cl| cl.lits.iter().all(|&l| gset[(l.abs() as usize) - 1]))
+                    .cloned()
+                    .collect();
+                let sub = dpll_component(&gclauses, group, &local_assign, weights, cache);
+                if sub.count == 0 {
+                    return SubProblemResult {
+                        count: 0,
+                        wmc: 0.0,
+                        best_weight: 0.0,
+                        best_assign: local_assign,
+                        conflict_clause: sub.conflict_clause,
+                    };
+                }
+                total_count = total_count.saturating_mul(sub.count);
+                total_wmc *= sub.wmc;
+                total_best *= sub.best_weight;
+                for &v in group {
+                    if sub.best_assign[v] != -1 {
+                        chosen[v] = sub.best_assign[v];
+                    }
+                }
+            }
+            for &v in comp_vars {
+                if local_assign[v] != -1 && chosen[v] == -1 {
+                    chosen[v] = local_assign[v];
+                }
+            }
+            return SubProblemResult {
+                count: total_count,
+                wmc: total_wmc,
+                best_weight: total_best,
+                best_assign: chosen,
+                conflict_clause: -1,
+            };
+        }
+    }
+
     // MOMS Heuristic: Pick variable appearing most frequently in minimum-size clauses
     let min_len = reduced.iter().map(|c| c.lits.len()).min().unwrap_or(2);
     let mut best_var = remaining_vars[0];
@@ -248,12 +405,12 @@ fn dpll_component(
     // Branch 1: best_var = 1 (True)
     let mut assign_true = local_assign;
     assign_true[best_var] = 1;
-    let res_true = dpll_component(&reduced, &remaining_vars, &assign_true, weights);
+    let res_true = dpll_component(&reduced, &remaining_vars, &assign_true, weights, cache);
 
     // Branch 0: best_var = 0 (False)
     let mut assign_false = local_assign;
     assign_false[best_var] = 0;
-    let res_false = dpll_component(&reduced, &remaining_vars, &assign_false, weights);
+    let res_false = dpll_component(&reduced, &remaining_vars, &assign_false, weights, cache);
 
     let p_true = weights[best_var];
     let p_false = 1.0 - p_true;
@@ -323,9 +480,25 @@ pub fn solve_exact_model_count(
     num_vars: usize,
     clauses_raw: &[Vec<i32>],
     prior_weights: &[f64],
-) -> CnfAuditResult {
+) -> Result<CnfAuditResult, String> {
     let start = Instant::now();
-    let n = num_vars.min(MAX_VARS);
+    // Hard engine limit: exceeding it is a loud error, never a silent
+    // truncation (callers used to get results for a smaller formula).
+    if num_vars > MAX_VARS {
+        return Err(format!(
+            "num_vars {num_vars} exceeds the engine limit MAX_VARS={MAX_VARS}; split the formula or reduce its variables"
+        ));
+    }
+    for cl in clauses_raw {
+        for &lit in cl.iter() {
+            if lit != 0 && (lit.abs() as usize) > num_vars {
+                return Err(format!(
+                    "clause literal {lit} references a variable outside num_vars={num_vars}"
+                ));
+            }
+        }
+    }
+    let n = num_vars;
     let mut weights = [0.5f64; MAX_VARS];
     for i in 0..n {
         if i < prior_weights.len() {
@@ -333,17 +506,49 @@ pub fn solve_exact_model_count(
         }
     }
 
-    let mut clauses = Vec::with_capacity(clauses_raw.len());
+    // Safe preprocessing (satisfying-assignment preserving): dedupe
+    // literals inside a clause, drop tautological clauses, drop
+    // duplicate clauses, and drop clauses subsumed by a shorter one.
+    let mut clauses: Vec<Clause> = Vec::with_capacity(clauses_raw.len());
     for (idx, cl) in clauses_raw.iter().enumerate() {
-        let valid_lits: Vec<i32> = cl
-            .iter()
-            .copied()
-            .filter(|&lit| lit != 0 && (lit.abs() as usize) <= n)
-            .collect();
+        let mut valid_lits: Vec<i32> = Vec::new();
+        for &lit in cl.iter() {
+            if lit != 0 && !valid_lits.contains(&lit) {
+                valid_lits.push(lit);
+            }
+        }
+        if valid_lits.iter().any(|&l| valid_lits.contains(&-l)) {
+            continue; // tautology: always satisfied
+        }
+        valid_lits.sort_unstable();
         clauses.push(Clause {
             lits: valid_lits,
             original_idx: idx,
         });
+    }
+    clauses.sort_by(|a, b| a.lits.cmp(&b.lits));
+    clauses.dedup_by(|a, b| a.lits == b.lits);
+    if clauses.len() <= 512 {
+        let mut keep = vec![true; clauses.len()];
+        for i in 0..clauses.len() {
+            if !keep[i] {
+                continue;
+            }
+            for j in 0..clauses.len() {
+                if i != j && keep[j]
+                    && clauses[i].lits.len() <= clauses[j].lits.len()
+                    && clauses[i].lits.iter().all(|l| clauses[j].lits.contains(l))
+                {
+                    keep[j] = false; // clause j is subsumed by clause i
+                }
+            }
+        }
+        clauses = clauses
+            .into_iter()
+            .zip(keep.iter())
+            .filter(|(_, k)| **k)
+            .map(|(c, _)| c)
+            .collect();
     }
 
     let total_space: u128 = if n < 128 { 1u128 << n } else { u128::MAX };
@@ -364,7 +569,7 @@ pub fn solve_exact_model_count(
         Ok(c) => c,
         Err(conflict_idx) => {
             let elapsed_us = start.elapsed().as_secs_f64() * 1_000_000.0;
-            return CnfAuditResult {
+            return Ok(CnfAuditResult {
                 is_satisfiable: 0,
                 num_vars: n as u32,
                 num_clauses: clauses_raw.len() as u32,
@@ -380,7 +585,7 @@ pub fn solve_exact_model_count(
                 components_found: 0,
                 conflict_clause_idx: conflict_idx,
                 ghost_assignment: [0u8; MAX_VARS],
-            };
+            });
         }
     };
 
@@ -442,6 +647,8 @@ pub fn solve_exact_model_count(
     }
 
     let num_components = components.len().max(1) as u32;
+    let mut cache: std::collections::HashMap<Vec<u8>, SubProblemResult> =
+        std::collections::HashMap::new();
     let mut first_conflict = -1i32;
 
     // Step 3: Solve each independent component and multiply #F and WMC
@@ -460,7 +667,7 @@ pub fn solve_exact_model_count(
             .cloned()
             .collect();
 
-        let sub = dpll_component(&comp_clauses, comp_vars, &assign, &weights);
+        let sub = dpll_component(&comp_clauses, comp_vars, &assign, &weights, &mut cache);
         if sub.count == 0 {
             global_count = 0;
             global_wmc = 0.0;
@@ -503,7 +710,7 @@ pub fn solve_exact_model_count(
         ghost_assignment[v] = if assign[v] == 1 { 1 } else { 0 };
     }
 
-    CnfAuditResult {
+    Ok(CnfAuditResult {
         is_satisfiable: is_sat,
         num_vars: n as u32,
         num_clauses: clauses_raw.len() as u32,
@@ -519,7 +726,7 @@ pub fn solve_exact_model_count(
         components_found: num_components,
         conflict_clause_idx: first_conflict,
         ghost_assignment,
-    }
+    })
 }
 
 // ============================================================================
@@ -982,7 +1189,10 @@ pub extern "C" fn sharplogic_solve_cnf(
     if out_result.is_null() {
         return -1;
     }
-    let n = (num_vars as usize).min(MAX_VARS);
+    if (num_vars as usize) > MAX_VARS {
+        return -2; // num_vars exceeds MAX_VARS (loud error, no truncation)
+    }
+    let n = num_vars as usize;
     let flat = if clauses_flat_ptr.is_null() || clauses_flat_len == 0 {
         &[][..]
     } else {
@@ -1007,11 +1217,15 @@ pub extern "C" fn sharplogic_solve_cnf(
         idx += cl_len;
     }
 
-    let res = solve_exact_model_count(n, &clauses, &weights);
-    unsafe {
-        *out_result = res;
+    match solve_exact_model_count(n, &clauses, &weights) {
+        Ok(res) => {
+            unsafe {
+                *out_result = res;
+            }
+            0
+        }
+        Err(_) => -3, // invalid formula (e.g. literal out of range)
     }
-    0
 }
 
 #[no_mangle]
@@ -1175,7 +1389,7 @@ mod tests {
         }
 
         let weights = vec![0.5; 24];
-        let res = solve_exact_model_count(24, &clauses, &weights);
+        let res = solve_exact_model_count(24, &clauses, &weights).expect("solve failed");
 
         assert_eq!(res.is_satisfiable, 1);
         assert_eq!(res.total_space_lo, 16_777_216);
@@ -1188,7 +1402,7 @@ mod tests {
         // Contradiction when Safety Patch (NOT x1 OR NOT x2) is added to (x1) AND (x2)
         let clauses = vec![vec![1], vec![2], vec![-1, -2]];
         let weights = vec![0.8, 0.7, 0.5];
-        let res = solve_exact_model_count(3, &clauses, &weights);
+        let res = solve_exact_model_count(3, &clauses, &weights).expect("solve failed");
         assert_eq!(res.is_satisfiable, 0);
         assert_eq!(res.exact_count_lo, 0);
         assert_eq!(res.sharp_score, 100.0);
