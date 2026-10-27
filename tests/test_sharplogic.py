@@ -229,9 +229,10 @@ class TestSharpLogicEndToEnd(unittest.TestCase):
 
     def test_08_viral_registration_referral_and_tier_unlock(self) -> None:
         """Verifies frictionless registration, token generation, referral chain, and tier unlocks."""
+        uid = f"user_{int(time.time()*1000)}"
         # 1. Register Bob with genesis code
         st, res_bob = dispatch_api_request(
-            "POST", "/api/register", body={"identity": "bob_agent_dev", "invite_code": "ETH-2026"}
+            "POST", "/api/register", body={"identity": f"bob_{uid}", "invite_code": "ETH-2026"}
         )
         self.assertEqual(st, 200)
         self.assertTrue(res_bob["ok"])
@@ -244,7 +245,7 @@ class TestSharpLogicEndToEnd(unittest.TestCase):
 
         # 2. Register Carol using Bob's referral code
         st, res_carol = dispatch_api_request(
-            "POST", "/api/register", body={"identity": "carol_researcher", "invite_code": bob_ref}
+            "POST", "/api/register", body={"identity": f"carol_{uid}", "invite_code": bob_ref}
         )
         self.assertEqual(st, 200)
         self.assertTrue(res_carol["ok"])
