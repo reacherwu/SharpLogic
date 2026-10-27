@@ -3,6 +3,8 @@ name = "sharplogic-core"
 version = "0.1.0"
 edition = "2021"
 description = "Zero-dependency Native Rust #k-SAT Exact Model Counter, WMC Engine, and O(K) Bounded Audit Manifold"
+license = "MIT"
+repository = "https://github.com/reacherwu/SharpLogic"
 
 [lib]
 name = "sharplogic_core"
