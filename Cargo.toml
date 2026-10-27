@@ -1,0 +1,14 @@
+[package]
+name = "sharplogic-core"
+version = "0.1.0"
+edition = "2021"
+description = "Zero-dependency Native Rust #k-SAT Exact Model Counter, WMC Engine, and O(K) Bounded Audit Manifold"
+
+[lib]
+name = "sharplogic_core"
+crate-type = ["cdylib", "rlib"]
+
+[profile.release]
+opt-level = 3
+lto = true
+codegen-units = 1

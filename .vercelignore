@@ -1,0 +1,6 @@
+target/
+__pycache__/
+*.pyc
+*.slgc
+.DS_Store
+.pytest_cache/
