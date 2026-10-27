@@ -227,6 +227,34 @@ class TestSharpLogicEndToEnd(unittest.TestCase):
         self.assertEqual(patched["audit"]["exact_count"], 0)
         self.assertEqual(patched["audit"]["sharp_score"], 100.0)
 
+    def test_08_viral_registration_referral_and_tier_unlock(self) -> None:
+        """Verifies frictionless registration, token generation, referral chain, and tier unlocks."""
+        # 1. Register Bob with genesis code
+        st, res_bob = dispatch_api_request(
+            "POST", "/api/register", body={"identity": "bob_agent_dev", "invite_code": "ETH-2026"}
+        )
+        self.assertEqual(st, 200)
+        self.assertTrue(res_bob["ok"])
+        bob_token = res_bob["token"]
+        bob_ref = res_bob["ref_code"]
+        self.assertTrue(bob_token.startswith("sl_user_"))
+        self.assertEqual(res_bob["invited_count"], 0)
+        self.assertIn("cli_offline_guard", res_bob["unlocked_tiers"])
+        self.assertNotIn("auto_patch", res_bob["unlocked_tiers"])
+
+        # 2. Register Carol using Bob's referral code
+        st, res_carol = dispatch_api_request(
+            "POST", "/api/register", body={"identity": "carol_researcher", "invite_code": bob_ref}
+        )
+        self.assertEqual(st, 200)
+        self.assertTrue(res_carol["ok"])
+
+        # 3. Verify Bob's tier automatically unlocked auto_patch (Tier 2)
+        st, me_bob = dispatch_api_request("GET", "/api/me", query_params={"token": [bob_token]})
+        self.assertEqual(st, 200)
+        self.assertEqual(me_bob["invited_count"], 1)
+        self.assertIn("auto_patch", me_bob["unlocked_tiers"])
+
 
 if __name__ == "__main__":
     unittest.main()

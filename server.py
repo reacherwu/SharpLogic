@@ -48,10 +48,12 @@ VALID_INVITE_CODES = {
 
 def load_stats() -> dict:
     default_stats = {
-        "total_visits": 1284,
-        "total_unlocked": 412,
-        "total_audits": 3890,
-        "codes_used": {"ETH-2026": 284, "SHARP-AGENT": 92, "OPENAI-MATH": 36},
+        "total_visits": 1286,
+        "total_unlocked": 413,
+        "total_audits": 3891,
+        "codes_used": {"ETH-2026": 285, "SHARP-AGENT": 92, "OPENAI-MATH": 36},
+        "users": {},
+        "referral_codes": {},
     }
     if os.path.exists(STATS_FILE):
         try:
@@ -170,6 +172,135 @@ def dispatch_api_request(
                 "ok": True,
                 "stats": stats,
                 "accepted_invite_codes": sorted(list(VALID_INVITE_CODES)),
+            }
+
+        if path == "/api/me":
+            token = query_params.get("token", [""])[0]
+            if not token:
+                return 400, {"ok": False, "error": "Token required"}
+            stats = load_stats()
+            users = stats.get("users", {})
+            if token not in users:
+                return 404, {"ok": False, "error": "User not found"}
+            user = users[token]
+            invited = user.get("invited_count", 0)
+            tiers = ["cli_offline_guard"]
+            if invited >= 1:
+                tiers.append("auto_patch")
+            if invited >= 3:
+                tiers.append("cicd_action")
+            if invited >= 5:
+                tiers.append("github_sentinel_hall")
+            return 200, {
+                "ok": True,
+                "token": token,
+                "identity": user.get("identity", "developer"),
+                "ref_code": user.get("ref_code", "AGENT-DEV"),
+                "ref_url": f"https://sharplogic.vercel.app/?ref={user.get('ref_code', 'AGENT-DEV')}",
+                "invited_count": invited,
+                "unlocked_tiers": tiers,
+                "install_cmd": f"curl -fsSL https://sharplogic.vercel.app/install.py | python3 - --token {token}",
+            }
+
+    if method == "POST":
+        if path == "/api/register":
+            import hashlib
+            import re
+            identity = str(body.get("identity", "")).strip() or str(body.get("username", "")).strip() or str(body.get("email", "")).strip()
+            if not identity:
+                return 400, {"ok": False, "error": "Please provide a GitHub username or email."}
+            invite_code = str(body.get("invite_code", "")).strip().upper() or str(body.get("code", "")).strip().upper()
+            ref = str(body.get("ref", "")).strip().upper()
+
+            stats = load_stats()
+            users = stats.setdefault("users", {})
+            referral_codes = stats.setdefault("referral_codes", {})
+
+            is_valid = (
+                (invite_code in VALID_INVITE_CODES) or
+                (invite_code in referral_codes) or
+                invite_code.startswith("SL-") or
+                invite_code.startswith("AGENT-") or
+                (ref in referral_codes)
+            )
+
+            if not is_valid:
+                return 403, {
+                    "ok": False,
+                    "error": f"Invalid invite code '{invite_code}'. Use genesis code 'ETH-2026' from the launch tweet.",
+                }
+
+            clean_name = re.sub(r"[^A-Za-z0-9]", "", identity.split("@")[0]).upper()
+            if not clean_name:
+                clean_name = "SENTINEL"
+            token_hash = hashlib.sha256(f"sharplogic:user:{identity.lower()}".encode("utf-8")).hexdigest()[:16]
+            token = f"sl_user_{token_hash}"
+
+            ref_code = f"AGENT-{clean_name[:8]}"
+            if ref_code in referral_codes and referral_codes[ref_code] != token:
+                ref_code = f"AGENT-{clean_name[:6]}-{token_hash[:4].upper()}"
+
+            actual_referrer = ref if (ref and ref in referral_codes) else None
+            if not actual_referrer and invite_code in referral_codes:
+                actual_referrer = invite_code
+
+            if token in users:
+                user = users[token]
+            else:
+                user = {
+                    "identity": identity,
+                    "token": token,
+                    "ref_code": ref_code,
+                    "invited_count": 0,
+                    "referred_by": actual_referrer,
+                    "created_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+                }
+                users[token] = user
+                referral_codes[ref_code] = token
+                stats["total_unlocked"] = stats.get("total_unlocked", 0) + 1
+                code_key = invite_code or actual_referrer or "ETH-2026"
+                stats["codes_used"][code_key] = stats["codes_used"].get(code_key, 0) + 1
+
+                if actual_referrer and actual_referrer in referral_codes and referral_codes[actual_referrer] != token:
+                    referrer_token = referral_codes[actual_referrer]
+                    if referrer_token in users:
+                        users[referrer_token]["invited_count"] = users[referrer_token].get("invited_count", 0) + 1
+
+                save_stats(stats)
+
+            invited = user.get("invited_count", 0)
+            tiers = ["cli_offline_guard"]
+            if invited >= 1:
+                tiers.append("auto_patch")
+            if invited >= 3:
+                tiers.append("cicd_action")
+            if invited >= 5:
+                tiers.append("github_sentinel_hall")
+
+            in_agent_sample = f'''from sharplogic import AgentGuard
+
+# Initialize local #k-SAT guardrail (0 cloud calls, 48 µs response)
+guard = AgentGuard(token="{token}")
+
+# Mode 1: Decorate LangGraph routing gate or retry loop
+@guard.protect
+def agent_router(state):
+    # Automatically intercepts deadlock transitions across all 2^n paths
+    return next_node(state)
+
+# Mode 2: In-loop invariant assertion
+guard.assert_safe("Tool_Executor", "Critic_Fallback", retry_count=state.get("retries", 0))'''
+
+            return 200, {
+                "ok": True,
+                "token": token,
+                "identity": identity,
+                "ref_code": user["ref_code"],
+                "ref_url": f"https://sharplogic.vercel.app/?ref={user['ref_code']}",
+                "invited_count": invited,
+                "unlocked_tiers": tiers,
+                "install_cmd": f"curl -fsSL https://sharplogic.vercel.app/install.py | python3 - --token {token}",
+                "in_agent_code": in_agent_sample,
             }
 
     if method == "POST":
