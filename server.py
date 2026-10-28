@@ -46,8 +46,8 @@ VALID_INVITE_CODES = {
     "DIFY-AGENT",
 }
 
-def load_stats() -> dict:
-    default_stats = {
+def _default_stats() -> dict:
+    return {
         "total_visits": 0,
         "total_unlocked": 0,
         "total_audits": 0,
@@ -55,20 +55,218 @@ def load_stats() -> dict:
         "users": {},
         "referral_codes": {},
     }
+
+
+# ---------------------------------------------------------------------------
+# Persistent document storage (stats + waitlist).
+#
+# On Vercel the filesystem is ephemeral per function instance, so the
+# original /tmp JSON file silently reset counters and discarded
+# registrations on every cold start. When a Postgres connection URL is
+# configured, the documents live in a `sharplogic_store` table (one JSONB
+# row per document) and every read-modify-write runs in a single
+# transaction with a row lock. Without a database URL (local development),
+# the original file behaviour is kept.
+# ---------------------------------------------------------------------------
+
+_DB_ENV_NAMES = (
+    "SHARPLOGIC_DATABASE_URL",
+    "DATABASE_URL",
+    "POSTGRES_URL",
+    "DATABASE_URL_UNPOOLED",
+    "POSTGRES_URL_NON_POOLING",
+)
+_DB_TABLE_READY = False
+_DB_LOCK = threading.Lock()
+
+
+def _database_url() -> Optional[str]:
+    for name in _DB_ENV_NAMES:
+        value = os.environ.get(name, "").strip()
+        if value.startswith("postgres://") or value.startswith("postgresql://"):
+            return value
+    return None
+
+
+def storage_backend() -> str:
+    return "postgres" if _database_url() else "file"
+
+
+def _db_connect():
+    import ssl as ssl_module
+    from urllib.parse import parse_qs, urlparse
+
+    import pg8000.dbapi
+
+    url = _database_url()
+    parsed = urlparse(url)
+    query = parse_qs(parsed.query)
+    sslmode = (query.get("sslmode", [""])[0] or "").lower()
+    host = parsed.hostname or "localhost"
+    use_ssl = sslmode in ("require", "verify-ca", "verify-full") or (
+        sslmode != "disable" and host not in ("localhost", "127.0.0.1")
+    )
+    conn = pg8000.dbapi.connect(
+        user=parsed.username or "",
+        password=parsed.password or "",
+        host=host,
+        port=parsed.port or 5432,
+        database=(parsed.path or "/").lstrip("/") or "postgres",
+        ssl_context=ssl_module.create_default_context() if use_ssl else None,
+        timeout=15,
+    )
+    global _DB_TABLE_READY
+    if not _DB_TABLE_READY:
+        with _DB_LOCK:
+            if not _DB_TABLE_READY:
+                cur = conn.cursor()
+                cur.execute(
+                    "CREATE TABLE IF NOT EXISTS sharplogic_store ("
+                    "key TEXT PRIMARY KEY, "
+                    "doc JSONB NOT NULL, "
+                    "updated_at TIMESTAMPTZ NOT NULL DEFAULT now())"
+                )
+                conn.commit()
+                cur.close()
+                _DB_TABLE_READY = True
+    return conn
+
+
+def _db_load_doc(key: str, default):
+    conn = _db_connect()
+    try:
+        cur = conn.cursor()
+        cur.execute("SELECT doc FROM sharplogic_store WHERE key = %s", (key,))
+        row = cur.fetchone()
+        cur.close()
+        if row is None:
+            return json.loads(json.dumps(default))
+        doc = row[0]
+        return doc if isinstance(doc, (dict, list)) else json.loads(doc)
+    finally:
+        conn.close()
+
+
+def _db_save_doc(key: str, doc) -> None:
+    conn = _db_connect()
+    try:
+        cur = conn.cursor()
+        cur.execute(
+            "INSERT INTO sharplogic_store (key, doc, updated_at) VALUES (%s, %s::jsonb, now()) "
+            "ON CONFLICT (key) DO UPDATE SET doc = EXCLUDED.doc, updated_at = now()",
+            (key, json.dumps(doc)),
+        )
+        conn.commit()
+        cur.close()
+    finally:
+        conn.close()
+
+
+def _db_mutate_doc(key: str, default, fn):
+    """Atomic read-modify-write of one stored document under a row lock."""
+    conn = _db_connect()
+    try:
+        cur = conn.cursor()
+        cur.execute("SELECT doc FROM sharplogic_store WHERE key = %s FOR UPDATE", (key,))
+        row = cur.fetchone()
+        if row is None:
+            doc = json.loads(json.dumps(default))
+            cur.execute(
+                "INSERT INTO sharplogic_store (key, doc) VALUES (%s, %s::jsonb) "
+                "ON CONFLICT (key) DO NOTHING",
+                (key, json.dumps(doc)),
+            )
+            cur.execute("SELECT doc FROM sharplogic_store WHERE key = %s FOR UPDATE", (key,))
+            row = cur.fetchone()
+            if row is not None and isinstance(row[0], (dict, list)):
+                doc = row[0]
+        elif isinstance(row[0], (dict, list)):
+            doc = row[0]
+        else:
+            doc = json.loads(row[0])
+        result = fn(doc)
+        cur.execute(
+            "UPDATE sharplogic_store SET doc = %s::jsonb, updated_at = now() WHERE key = %s",
+            (json.dumps(doc), key),
+        )
+        conn.commit()
+        cur.close()
+        return result, doc
+    except Exception:
+        try:
+            conn.rollback()
+        except Exception:
+            pass
+        raise
+    finally:
+        conn.close()
+
+
+def load_stats() -> dict:
+    if _database_url():
+        try:
+            data = _db_load_doc("stats", _default_stats())
+            return {**_default_stats(), **data}
+        except Exception:
+            pass  # fall through to file so a DB outage never breaks reads
     if os.path.exists(STATS_FILE):
         try:
             with open(STATS_FILE, "r", encoding="utf-8") as f:
                 data = json.load(f)
-                return {**default_stats, **data}
+                return {**_default_stats(), **data}
         except Exception:
             pass
-    return default_stats
+    return _default_stats()
+
 
 def save_stats(stats: dict) -> None:
+    if _database_url():
+        try:
+            _db_save_doc("stats", stats)
+            return
+        except Exception:
+            pass  # fall through to file fallback
     try:
         with open(STATS_FILE, "w", encoding="utf-8") as f:
             json.dump(stats, f)
     except Exception:
+        pass
+
+
+def mutate_stats(fn) -> dict:
+    """Run fn(stats) as one atomic read-modify-write; returns final stats."""
+    if _database_url():
+        try:
+            def _apply(doc):
+                merged = {**_default_stats(), **doc}
+                fn(merged)
+                doc.clear()
+                doc.update(merged)
+
+            _, doc = _db_mutate_doc("stats", _default_stats(), _apply)
+            return {**_default_stats(), **doc}
+        except Exception:
+            pass  # fall through to file fallback
+    stats = load_stats()
+    fn(stats)
+    save_stats(stats)
+    return stats
+
+
+def append_waitlist_entry(entry: dict) -> None:
+    if _database_url():
+        try:
+            def _append(lst):
+                lst.append(entry)
+
+            _db_mutate_doc("waitlist", [], _append)
+            return
+        except Exception:
+            pass  # fall through to file fallback
+    try:
+        with open(WAITLIST_FILE, "a", encoding="utf-8") as f:
+            f.write(json.dumps(entry, ensure_ascii=False) + "\n")
+    except OSError:
         pass
 
 MAX_PAYLOAD_BYTES = 65536  # 64 KB cap
@@ -157,20 +355,23 @@ def dispatch_api_request(
             sid = query_params.get("scenario_id", ["ecommerce_promo"])[0]
             patched = query_params.get("patched", ["false"])[0].lower() in ("true", "1", "yes")
             try:
-                stats = load_stats()
-                stats["total_audits"] = stats.get("total_audits", 0) + 1
-                save_stats(stats)
+                def _inc_audit(s):
+                    s["total_audits"] = s.get("total_audits", 0) + 1
+
+                mutate_stats(_inc_audit)
                 return 200, evaluate_scenario(sid, apply_patch=patched)
             except Exception as exc:
                 return 400, {"error": str(exc)}
 
         if path == "/api/stats":
-            stats = load_stats()
-            stats["total_visits"] = stats.get("total_visits", 0) + 1
-            save_stats(stats)
+            def _inc_visit(s):
+                s["total_visits"] = s.get("total_visits", 0) + 1
+
+            stats = mutate_stats(_inc_visit)
             return 200, {
                 "ok": True,
                 "stats": stats,
+                "storage": storage_backend(),
                 "accepted_invite_codes": sorted(list(VALID_INVITE_CODES)),
             }
 
@@ -328,10 +529,12 @@ guard.assert_safe("Critic_Fallback", "Tool_Executor",
                     "error": f"Invalid code '{code}'. Use 'ETH-2026' from the launch tweet to unlock.",
                 }
             
-            stats = load_stats()
-            stats["total_unlocked"] = stats.get("total_unlocked", 0) + 1
-            stats["codes_used"][code] = stats["codes_used"].get(code, 0) + 1
-            save_stats(stats)
+            def _apply_access(s):
+                s["total_unlocked"] = s.get("total_unlocked", 0) + 1
+                codes = s.setdefault("codes_used", {})
+                codes[code] = codes.get(code, 0) + 1
+
+            mutate_stats(_apply_access)
 
             token_hash = hashlib.sha256(f"sharplogic:access:{code}:{client_ip}".encode("utf-8")).hexdigest()[:24]
             return 200, {
@@ -348,9 +551,10 @@ guard.assert_safe("Critic_Fallback", "Tool_Executor",
             custom_priors = body.get("custom_priors")
             llm_api_key = str(body.get("llm_api_key", "")).strip() or None
             try:
-                stats = load_stats()
-                stats["total_audits"] = stats.get("total_audits", 0) + 1
-                save_stats(stats)
+                def _inc_audit_post(s):
+                    s["total_audits"] = s.get("total_audits", 0) + 1
+
+                mutate_stats(_inc_audit_post)
                 if sid == "custom":
                     raw_rules = str(body.get("raw_rules", ""))[:16000]
                     return 200, evaluate_custom_rules(
@@ -401,11 +605,7 @@ guard.assert_safe("Critic_Fallback", "Tool_Executor",
                 "sandbox_token": sandbox_token,
                 "timestamp": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
             }
-            try:
-                with open(WAITLIST_FILE, "a", encoding="utf-8") as f:
-                    f.write(json.dumps(entry, ensure_ascii=False) + "\n")
-            except OSError:
-                pass
+            append_waitlist_entry(entry)
             get_engine().ingest_event(
                 f"WAITLIST_SIGNUP: {email} ({role})",
                 domain_tag=9,
