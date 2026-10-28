@@ -1097,7 +1097,138 @@ curl -fsSL https://sharplogic.vercel.app/install.py | python3 - --token sl_user_
       </div>
     </section>
 
+    <!-- ========================================================
+         Zero-friction browser trial: POST /api/graph-audit
+         (real compiler + exact #k-SAT engine, no signup/install)
+         ======================================================== -->
+    <section class="terminal-window" id="try" style="margin-bottom: 48px;">
+      <div class="terminal-header">
+        <div class="terminal-dots">
+          <span class="dot red"></span>
+          <span class="dot yellow"></span>
+          <span class="dot green"></span>
+          <span class="terminal-title" style="margin-left: 8px;">try_it_in_your_browser.json</span>
+        </div>
+        <div class="terminal-badge" style="background: #238636; color: #fff;">NO SIGNUP &bull; NO INSTALL</div>
+      </div>
+      <div style="padding: 26px;">
+        <h2 style="font-family: var(--font-mono); font-size: 22px; margin: 0 0 10px 0; color: #f0f6fc;">TRY IT IN YOUR BROWSER &mdash; NO SIGNUP, NO INSTALL</h2>
+        <p style="font-family: var(--font-mono); font-size: 13px; line-height: 1.7; color: #8b949e; margin: 0 0 14px 0;">
+          Paste a LangGraph / Dify style workflow graph (nodes, edges, guard conditions). The same exact
+          #k-SAT engine behind the CLI audits it right here: it counts &mdash; exactly &mdash; the condition
+          assignments under which your workflow deadlocks or livelocks (#F), and lists the structural issues.
+        </p>
+        <p style="font-family: var(--font-mono); font-size: 13px; line-height: 1.7; color: #f0f6fc; margin: 0 0 12px 0;">
+          The prefilled example has a real bug: the Critic may only exit while <code>retry_count &lt; 3</code> &mdash;
+          the very condition that keeps it looping. When the count hits 3, every exit is disabled. Run it and watch the engine catch it.
+        </p>
+        <textarea id="trial-graph-input" class="brutal-input" rows="15" spellcheck="false" style="width: 100%; max-width: 100%; resize: vertical; line-height: 1.55;">{
+  "nodes": ["Start", "Tool_Executor", "Critic", "END"],
+  "terminals": ["END"],
+  "edges": [
+    { "from": "Start", "to": "Tool_Executor", "condition": "" },
+    { "from": "Tool_Executor", "to": "Critic", "condition": "" },
+    { "from": "Critic", "to": "Tool_Executor", "condition": "retry_count < 3" },
+    { "from": "Critic", "to": "END", "condition": "retry_count < 3" }
+  ]
+}</textarea>
+        <div style="display: flex; gap: 10px; flex-wrap: wrap; margin-top: 14px;">
+          <button class="btn-brutal green" id="trial-run-btn" onclick="runGraphAudit()">RUN AUDIT</button>
+          <button class="btn-brutal" onclick="loadTrialExample('trap')">LOAD TRAP EXAMPLE</button>
+          <button class="btn-brutal dark" onclick="loadTrialExample('clean')">LOAD FIXED EXAMPLE</button>
+        </div>
+        <div id="trial-result" style="display: none; margin-top: 20px; font-family: var(--font-mono); font-size: 13px; line-height: 1.7;"></div>
+      </div>
+    </section>
+    <script>
+      var TRIAL_EXAMPLES = {
+        trap: {
+          nodes: ["Start", "Tool_Executor", "Critic", "END"],
+          terminals: ["END"],
+          edges: [
+            { from: "Start", to: "Tool_Executor", condition: "" },
+            { from: "Tool_Executor", to: "Critic", condition: "" },
+            { from: "Critic", to: "Tool_Executor", condition: "retry_count < 3" },
+            { from: "Critic", to: "END", condition: "retry_count < 3" }
+          ]
+        },
+        clean: {
+          nodes: ["Start", "Tool_Executor", "Critic", "END"],
+          terminals: ["END"],
+          edges: [
+            { from: "Start", to: "Tool_Executor", condition: "" },
+            { from: "Tool_Executor", to: "Critic", condition: "" },
+            { from: "Critic", to: "Tool_Executor", condition: "retry_count < 3" },
+            { from: "Critic", to: "END", condition: "retry_count >= 3" }
+          ]
+        }
+      };
+      function loadTrialExample(which) {
+        document.getElementById('trial-graph-input').value = JSON.stringify(TRIAL_EXAMPLES[which], null, 2);
+        document.getElementById('trial-result').style.display = 'none';
+      }
+      function trialEsc(s) {
+        return String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+      }
+      async function runGraphAudit() {
+        var box = document.getElementById('trial-result');
+        var btn = document.getElementById('trial-run-btn');
+        var raw = document.getElementById('trial-graph-input').value;
+        var graph;
+        try {
+          graph = JSON.parse(raw);
+        } catch (e) {
+          box.style.display = 'block';
+          box.innerHTML = '<div style="border: 2px solid #f85149; padding: 14px; color: #f85149;">That is not valid JSON: ' + trialEsc(e.message) + '</div>';
+          return;
+        }
+        btn.disabled = true;
+        btn.textContent = 'AUDITING...';
+        box.style.display = 'block';
+        box.innerHTML = '<div style="color: #8b949e;">Compiling your graph to a trap-encoding CNF and counting exactly...</div>';
+        try {
+          const resp = await fetch('/api/graph-audit', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ graph: graph })
+          });
+          const data = await resp.json();
+          if (!resp.ok || !data.ok) {
+            box.innerHTML = '<div style="border: 2px solid #f85149; padding: 14px; color: #f85149;">Audit refused: ' + trialEsc(data.error || ('HTTP ' + resp.status)) + '</div>';
+            return;
+          }
+          var html = '';
+          if (data.trap_count > 0) {
+            html += '<div style="border: 2px solid #f85149; padding: 14px; color: #f85149; font-size: 16px;">[!] TRAPS FOUND: #F = ' + data.trap_count + ' of ' + data.total_assignments + ' condition assignments leave this workflow stuck.</div>';
+          } else {
+            html += '<div style="border: 2px solid #238636; padding: 14px; color: #3fb950; font-size: 16px;">[&#10003;] #F = 0 of ' + data.total_assignments + ': no condition assignment traps this workflow. Every reachable node keeps a way out.</div>';
+          }
+          html += '<div style="color: #8b949e; margin-top: 10px;">Counted exactly in ' + data.solve_time_us + ' &micro;s &mdash; no sampling. Conditions audited: ' + (data.condition_variables.length ? trialEsc(data.condition_variables.join(', ')) : '(none)') + '.</div>';
+          if (data.witnesses && data.witnesses.length) {
+            html += '<div style="margin-top: 14px; color: #f0f6fc;">WHERE IT GETS STUCK:</div><ul style="margin: 6px 0 0 18px; color: #f85149;">';
+            data.witnesses.forEach(function (w) { html += '<li>' + trialEsc(w) + '</li>'; });
+            html += '</ul>';
+          }
+          if (data.structural_issues && data.structural_issues.length) {
+            html += '<div style="margin-top: 14px; color: #f0f6fc;">STRUCTURAL ISSUES:</div><ul style="margin: 6px 0 0 18px; color: #8b949e;">';
+            data.structural_issues.forEach(function (f) {
+              html += '<li><b style="color:#f0f6fc;">' + trialEsc(f.type) + '</b> [' + trialEsc(f.severity) + '] at ' + trialEsc((f.nodes || []).join(', ')) + ' &mdash; ' + trialEsc(f.detail) + '</li>';
+            });
+            html += '</ul>';
+          }
+          html += '<div style="margin-top: 14px; color: #8b949e;">This trial covers graphs up to 16 condition atoms. Bigger workflow? The full package compiles any graph (up to the 64-variable engine limit) to an exact CNF counter: <code>curl -fsSL https://sharplogic.vercel.app/install.py | python3 -</code></div>';
+          box.innerHTML = html;
+        } catch (e) {
+          box.innerHTML = '<div style="border: 2px solid #f85149; padding: 14px; color: #f85149;">Request failed: ' + trialEsc(e.message) + '</div>';
+        } finally {
+          btn.disabled = false;
+          btn.textContent = 'RUN AUDIT';
+        }
+      }
+    </script>
+
     <!-- The Centerpiece: Cyber-Terminal Interactive Canvas -->
+
     <section class="terminal-window" id="canvas">
       <div class="terminal-header">
         <div class="terminal-dots">

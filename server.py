@@ -564,6 +564,99 @@ guard.assert_safe("Critic_Fallback", "Tool_Executor",
             except Exception as exc:
                 return 400, {"error": str(exc)}
 
+        if path == "/api/graph-audit":
+            # Zero-friction browser trial: audit a workflow graph with the
+            # same compiler + exact #k-SAT engine as the CLI/package path
+            # (evaluate_custom_rules -> Autoformalizer trap encoding).
+            # No signup, no install; verdicts are computed, never canned.
+            graph = body.get("graph")
+            if graph is None and ("nodes" in body or "edges" in body):
+                graph = body  # the graph object may also be the whole body
+            if isinstance(graph, str):
+                try:
+                    graph = json.loads(graph)
+                except Exception:
+                    graph = None
+            if not isinstance(graph, dict):
+                return 400, {
+                    "ok": False,
+                    "error": "Request body must be JSON of the form {\"graph\": {\"nodes\": [...], \"edges\": [{\"from\": ..., \"to\": ..., \"condition\": ...}], \"terminals\": [...]}}.",
+                }
+            nodes = graph.get("nodes")
+            if not isinstance(nodes, list) or not nodes:
+                return 400, {
+                    "ok": False,
+                    "error": "graph.nodes must be a non-empty list of node ids (strings or {\"id\": ...} objects).",
+                }
+            for nd in nodes:
+                if isinstance(nd, dict):
+                    if not (nd.get("id") or nd.get("name") or nd.get("key")):
+                        return 400, {"ok": False, "error": "Each node object needs an 'id'."}
+                elif not isinstance(nd, str):
+                    return 400, {"ok": False, "error": "graph.nodes entries must be strings or objects with an 'id'."}
+            edges = graph.get("edges", [])
+            if not isinstance(edges, list):
+                return 400, {"ok": False, "error": "graph.edges must be a list of {\"from\", \"to\", \"condition\"} objects."}
+            for ed in edges:
+                if isinstance(ed, dict):
+                    src = ed.get("from") or ed.get("source") or ed.get("src")
+                    dst = ed.get("to") or ed.get("target") or ed.get("dst")
+                    if not src or not dst:
+                        return 400, {"ok": False, "error": "Each edge needs a 'from' and a 'to' node id."}
+                elif isinstance(ed, (list, tuple)) and len(ed) >= 2:
+                    continue
+                else:
+                    return 400, {"ok": False, "error": "Each edge must be an object {\"from\", \"to\", \"condition\"} (or a [from, to] pair)."}
+            terminals = graph.get("terminals", [])
+            if terminals is not None and not isinstance(terminals, list):
+                return 400, {"ok": False, "error": "graph.terminals must be a list of node ids."}
+            try:
+                res = evaluate_custom_rules(json.dumps(graph))
+            except ValueError as exc:
+                # Loud engine/compiler limits (e.g. trap encoding past
+                # MAX_VARS variables) surface as-is, never truncated.
+                return 400, {"ok": False, "error": str(exc)}
+            except Exception as exc:
+                return 400, {"ok": False, "error": f"Graph audit failed: {exc}"}
+            ga = res.get("graph_analysis")
+            if not ga:
+                return 400, {"ok": False, "error": "Input was not recognized as an agent workflow graph (needs 'nodes' and 'edges')."}
+            atoms = ga.get("condition_variables") or []
+            if len(atoms) > 16:
+                # Same loud limit as the standalone checker (install.py,
+                # MAX_ATOMS = 16): the browser trial enumerates condition
+                # assignments exactly, so it refuses instead of guessing.
+                return 400, {
+                    "ok": False,
+                    "error": (
+                        f"Graph uses {len(atoms)} distinct condition atoms; the browser trial "
+                        "supports at most 16, the same limit as the standalone checker. "
+                        "For larger graphs install the full package, which compiles the "
+                        "graph to an exact CNF counter: curl -fsSL https://sharplogic.vercel.app/install.py | python3 -"
+                    ),
+                }
+            audit = res["audit"]
+            trap_count = int(audit["exact_count"])
+
+            def _inc_graph_audit(s):
+                s["total_audits"] = s.get("total_audits", 0) + 1
+
+            mutate_stats(_inc_graph_audit)
+            return 200, {
+                "ok": True,
+                "trap_count": trap_count,
+                "total_assignments": 1 << len(atoms),
+                "condition_variables": atoms,
+                "structural_issues": ga.get("findings", []),
+                "witnesses": list(res.get("trap_witness") or []),
+                "solve_time_us": audit.get("solve_time_us"),
+                "engine": (
+                    f"sharplogic-core ({audit.get('engine_backend', 'exact #k-SAT counter')}): "
+                    "your graph was compiled to a trap-encoding CNF and counted exactly - no sampling, no canned verdicts."
+                ),
+                "verdict": "traps_found" if trap_count > 0 else "clean",
+            }
+
         if path == "/api/manifold/recall":
             query = str(body.get("query", "refund payout below cost"))[:512]
             engine = get_engine()
