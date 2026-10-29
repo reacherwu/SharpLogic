@@ -8,11 +8,15 @@ Includes:
 - Read-only serverless filesystem detection (/tmp fallback for Vercel Lambda)
 """
 
+import html as _html
 import json
 import os
+import re
 import sys
 import threading
 import time
+import urllib.error
+import urllib.request
 from http.server import BaseHTTPRequestHandler, SimpleHTTPRequestHandler, ThreadingHTTPServer
 from typing import Any, Dict, List, Optional, Tuple
 from urllib.parse import parse_qs, urlparse
@@ -35,6 +39,7 @@ _WRITABLE_DIR = ROOT_DIR if os.access(ROOT_DIR, os.W_OK) else "/tmp"
 WAITLIST_FILE = os.path.join(_WRITABLE_DIR, "waitlist_signups.jsonl")
 SNAPSHOT_FILE = os.path.join(_WRITABLE_DIR, "sharplogic_manifold.slgc")
 STATS_FILE = os.path.join(_WRITABLE_DIR, "sharplogic_stats.json")
+LEADS_FILE = os.path.join(_WRITABLE_DIR, "sharplogic_leads.json")
 
 VALID_INVITE_CODES = {
     "ETH-2026",
@@ -410,6 +415,313 @@ def append_waitlist_entry(entry: dict) -> None:
     except OSError:
         pass
 
+
+# ---------------------------------------------------------------------------
+# Trial report leads (POST /api/report).
+#
+# A visitor who runs the browser trial can ask for the full report by
+# email - the value-exchange moment right after they see their trap
+# count. Leads live in one JSON document (key "leads" in the Postgres
+# store, LEADS_FILE locally) written through the SAME strict path as the
+# counters: in DB mode the append is one locked transaction, retried
+# once, and raises StorageError without writing anything on failure -
+# never a silent file/default fallback (the 2026-10-29 reset rule).
+# Reads degrade gracefully like load_stats. The daily send caps below
+# are counted from this doc.
+# ---------------------------------------------------------------------------
+
+def load_leads() -> list:
+    """Read-only load of the leads doc (DB -> file -> [])."""
+    if _database_url():
+        try:
+            data = _db_load_doc("leads", [])
+            return data if isinstance(data, list) else []
+        except Exception:
+            pass  # fall through to file so a DB outage never breaks reads
+    if os.path.exists(LEADS_FILE):
+        try:
+            with open(LEADS_FILE, "r", encoding="utf-8") as f:
+                data = json.load(f)
+                return data if isinstance(data, list) else []
+        except Exception:
+            pass
+    return []
+
+
+def append_lead(entry: dict) -> None:
+    """Append one lead. DB mode: atomic mutate of the "leads" doc,
+    retried once, StorageError on failure (nothing written, no file
+    fallback). File mode: read-modify-write of the local JSON doc."""
+    if _database_url():
+        def _append(lst):
+            lst.append(entry)
+
+        _db_retry(lambda: _db_mutate_doc("leads", [], _append), "append lead")
+        return
+    leads = load_leads()
+    leads.append(entry)
+    with open(LEADS_FILE, "w", encoding="utf-8") as f:
+        json.dump(leads, f)
+
+
+_EMAIL_RE = re.compile(
+    r"^[A-Za-z0-9.!#$%&'*+/=?^_`{|}~-]+@"
+    r"[A-Za-z0-9](?:[A-Za-z0-9-]*[A-Za-z0-9])?"
+    r"(?:\.[A-Za-z0-9](?:[A-Za-z0-9-]*[A-Za-z0-9])?)+$"
+)
+
+
+def _valid_email(email: str) -> bool:
+    return 0 < len(email) <= 254 and bool(_EMAIL_RE.match(email))
+
+
+REPORT_DAILY_CAP = 3  # max report emails per email address / per IP per day
+
+
+def _report_cap_hit(leads: list, email: str, client_ip: str) -> Optional[str]:
+    """Return "email" or "ip" when today's stored *sent* leads reach the
+    daily cap for this address/IP, else None. Leads recorded as
+    send_failed never consume cap - a Resend outage must not lock a
+    visitor out."""
+    today = time.strftime("%Y-%m-%d", time.gmtime())
+    email_hits = 0
+    ip_hits = 0
+    for lead in leads:
+        if not isinstance(lead, dict) or lead.get("status") != "sent":
+            continue
+        if str(lead.get("ts", ""))[:10] != today:
+            continue
+        if str(lead.get("email", "")).strip().lower() == email.lower():
+            email_hits += 1
+        if lead.get("ip") == client_ip:
+            ip_hits += 1
+    if email_hits >= REPORT_DAILY_CAP:
+        return "email"
+    if ip_hits >= REPORT_DAILY_CAP:
+        return "ip"
+    return None
+
+
+def _extract_graph(body: Dict[str, Any]) -> Tuple[Optional[dict], Optional[Tuple[int, Dict[str, Any]]]]:
+    """Structural validation of a workflow-graph payload, shared by
+    POST /api/graph-audit and POST /api/report so both endpoints accept
+    and refuse exactly the same shapes. Returns (graph, None) on success
+    or (None, (status, payload)) carrying the trial endpoint's 400."""
+    graph = body.get("graph")
+    if graph is None and ("nodes" in body or "edges" in body):
+        graph = body  # the graph object may also be the whole body
+    if isinstance(graph, str):
+        try:
+            graph = json.loads(graph)
+        except Exception:
+            graph = None
+    if not isinstance(graph, dict):
+        return None, (400, {
+            "ok": False,
+            "error": "Request body must be JSON of the form {\"graph\": {\"nodes\": [...], \"edges\": [{\"from\": ..., \"to\": ..., \"condition\": ...}], \"terminals\": [...]}}.",
+        })
+    nodes = graph.get("nodes")
+    if not isinstance(nodes, list) or not nodes:
+        return None, (400, {
+            "ok": False,
+            "error": "graph.nodes must be a non-empty list of node ids (strings or {\"id\": ...} objects).",
+        })
+    for nd in nodes:
+        if isinstance(nd, dict):
+            if not (nd.get("id") or nd.get("name") or nd.get("key")):
+                return None, (400, {"ok": False, "error": "Each node object needs an 'id'."})
+        elif not isinstance(nd, str):
+            return None, (400, {"ok": False, "error": "graph.nodes entries must be strings or objects with an 'id'."})
+    edges = graph.get("edges", [])
+    if not isinstance(edges, list):
+        return None, (400, {"ok": False, "error": "graph.edges must be a list of {\"from\", \"to\", \"condition\"} objects."})
+    for ed in edges:
+        if isinstance(ed, dict):
+            src = ed.get("from") or ed.get("source") or ed.get("src")
+            dst = ed.get("to") or ed.get("target") or ed.get("dst")
+            if not src or not dst:
+                return None, (400, {"ok": False, "error": "Each edge needs a 'from' and a 'to' node id."})
+        elif isinstance(ed, (list, tuple)) and len(ed) >= 2:
+            continue
+        else:
+            return None, (400, {"ok": False, "error": "Each edge must be an object {\"from\", \"to\", \"condition\"} (or a [from, to] pair)."})
+    terminals = graph.get("terminals", [])
+    if terminals is not None and not isinstance(terminals, list):
+        return None, (400, {"ok": False, "error": "graph.terminals must be a list of node ids."})
+    return graph, None
+
+
+def _run_exact_graph_audit(graph: dict):
+    """Run the real chain (evaluate_custom_rules -> Autoformalizer trap
+    encoding -> exact #k-SAT engine) for a structurally valid graph, the
+    same path POST /api/graph-audit uses. Returns (result, atoms, None)
+    or (None, None, (status, payload)). The emailed report needs exact
+    counts and witnesses, so the >16-atom trial limit is a loud 400
+    here too - no sampled fallback."""
+    try:
+        res = evaluate_custom_rules(json.dumps(graph))
+    except ValueError as exc:
+        # Loud engine/compiler limits (e.g. trap encoding past MAX_VARS).
+        return None, None, (400, {"ok": False, "error": str(exc)})
+    except Exception as exc:
+        return None, None, (400, {"ok": False, "error": f"Graph audit failed: {exc}"})
+    ga = res.get("graph_analysis")
+    if not ga:
+        return None, None, (400, {"ok": False, "error": "Input was not recognized as an agent workflow graph (needs 'nodes' and 'edges')."})
+    atoms = ga.get("condition_variables") or []
+    if len(atoms) > 16:
+        return None, None, (400, {
+            "ok": False,
+            "error": (
+                f"Graph uses {len(atoms)} distinct condition atoms; emailed reports are "
+                "exact counts, and this exact path supports at most 16 condition atoms "
+                "per graph. Split the graph, or install the full package: "
+                "curl -fsSL https://sharplogic.vercel.app/install.py | python3 -"
+            ),
+        })
+    return res, atoms, None
+
+
+def _format_percent(part: int, whole: int) -> str:
+    if whole <= 0 or part <= 0:
+        return "0%"
+    pct = (100.0 * part) / whole
+    return ("%.4f" % pct).rstrip("0").rstrip(".") + "%"
+
+
+def _build_report(res: dict, atoms: list) -> Tuple[str, str, str]:
+    """(subject, text, html) for one audit result. Every number comes
+    from the server's own engine run - never from the client."""
+    audit = res["audit"]
+    exact_count = int(audit["exact_count"])
+    total_space = 1 << len(atoms)
+    pct = _format_percent(exact_count, total_space)
+    solve_us = audit.get("solve_time_us")
+    witnesses = [str(w) for w in (res.get("trap_witness") or [])][:10]
+    findings = (res.get("graph_analysis") or {}).get("findings") or []
+
+    if exact_count > 0:
+        meaning = (
+            "What this means: each trap assignment is one concrete combination of guard "
+            "conditions under which the workflow can stall forever (deadlock/livelock) or "
+            "run into a dead end. Sampled evals almost never land on these exact "
+            "combinations - exact counting enumerates all of them."
+        )
+    else:
+        meaning = (
+            "What this means: no condition assignment traps this workflow - every "
+            "reachable state keeps at least one enabled path to a terminal node."
+        )
+
+    subject = f"SharpLogic report: #F = {exact_count:,} trap assignments in your workflow graph"
+
+    lines = [
+        "SharpLogic - exact trap-state audit of your workflow graph",
+        "",
+        f"Trap assignments (#F): {exact_count:,}",
+        f"Total condition assignments: {total_space:,}",
+        f"Share that traps: {pct}",
+        f"Counted exactly in {solve_us} µs (no sampling).",
+        f"Conditions audited: {', '.join(atoms) if atoms else '(none)'}",
+        "",
+    ]
+    if witnesses:
+        lines.append("Trap witnesses (where it gets stuck):")
+        lines += [f"  - {w}" for w in witnesses]
+        lines.append("")
+    if findings:
+        lines.append("Structural findings:")
+        for f in findings[:10]:
+            nodes = ", ".join(str(n) for n in (f.get("nodes") or []))
+            lines.append(f"  - [{f.get('type')}] ({f.get('severity')}) at {nodes} - {f.get('detail')}")
+        lines.append("")
+    lines += [
+        meaning,
+        "",
+        "Re-run or audit another graph: https://sharplogic.vercel.app/#try",
+        "Full CLI + source (MIT): https://github.com/reacherwu/SharpLogic",
+        "",
+        "You received this because you requested the full report from the SharpLogic browser trial.",
+    ]
+    text_body = "\n".join(lines)
+
+    esc = _html.escape
+    wit_html = ""
+    if witnesses:
+        wit_html = (
+            "<h3>Trap witnesses (where it gets stuck)</h3><ul>"
+            + "".join(f"<li>{esc(w)}</li>" for w in witnesses)
+            + "</ul>"
+        )
+    find_html = ""
+    if findings:
+        items = "".join(
+            f"<li><b>{esc(str(f.get('type')))}</b> ({esc(str(f.get('severity')))}) at "
+            f"{esc(', '.join(str(n) for n in (f.get('nodes') or [])))} - {esc(str(f.get('detail')))}</li>"
+            for f in findings[:10]
+        )
+        find_html = f"<h3>Structural findings</h3><ul>{items}</ul>"
+    html_body = f"""<!doctype html><html><body style="font-family: ui-monospace, Menlo, Consolas, monospace; color: #24292f; line-height: 1.6;">
+<h2>SharpLogic &mdash; exact trap-state audit</h2>
+<p><b>Trap assignments (#F): {exact_count:,}</b><br>
+Total condition assignments: {total_space:,}<br>
+Share that traps: {esc(pct)}<br>
+Counted exactly in {esc(str(solve_us))} &micro;s &mdash; no sampling.<br>
+Conditions audited: {esc(', '.join(atoms) if atoms else '(none)')}</p>
+{wit_html}{find_html}
+<p>{esc(meaning)}</p>
+<p>Re-run or audit another graph: <a href="https://sharplogic.vercel.app/#try">sharplogic.vercel.app/#try</a><br>
+Full CLI + source (MIT): <a href="https://github.com/reacherwu/SharpLogic">github.com/reacherwu/SharpLogic</a></p>
+<p style="color:#57606a; font-size: 12px;">You received this because you requested the full report from the SharpLogic browser trial.</p>
+</body></html>"""
+    return subject, text_body, html_body
+
+
+_RESEND_API_URL = "https://api.resend.com/emails"
+_REPORT_FROM = "SharpLogic <hello@mail.quotalis.app>"
+_RESEND_KEY_ENV_NAME = "RESEND" + "_API" + "_KEY"
+
+
+def _send_report_email(to_email: str, subject: str, text_body: str, html_body: str):
+    """Send one report email via the Resend API. Returns (message_id,
+    None) when Resend accepts the message, (None, error) otherwise -
+    callers must treat a None id as "not delivered"."""
+    api_key = os.environ.get(_RESEND_KEY_ENV_NAME, "").strip()
+    if not api_key:
+        return None, "email service is not configured (RESEND_API_KEY is not set)"
+    payload = json.dumps({
+        "from": _REPORT_FROM,
+        "to": [to_email],
+        "subject": subject,
+        "text": text_body,
+        "html": html_body,
+    }).encode("utf-8")
+    req = urllib.request.Request(
+        _RESEND_API_URL,
+        data=payload,
+        headers={
+            "Authorization": f"Bearer {api_key}",
+            "Content-Type": "application/json",
+        },
+        method="POST",
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=15) as resp:
+            data = json.loads(resp.read().decode("utf-8", "replace"))
+    except urllib.error.HTTPError as exc:
+        try:
+            detail = exc.read().decode("utf-8", "replace")[:300]
+        except Exception:
+            detail = ""
+        return None, f"Resend API HTTP {exc.code}: {detail}"
+    except Exception as exc:
+        return None, f"email send failed: {exc}"
+    message_id = data.get("id") if isinstance(data, dict) else None
+    if not message_id:
+        return None, f"Resend accepted the request but returned no message id: {str(data)[:200]}"
+    return message_id, None
+
+
 MAX_PAYLOAD_BYTES = 65536  # 64 KB cap
 MAX_TRACKED_IPS = 256      # Strictly bounded O(K) rate-limiter table
 RATE_LIMIT_PER_MIN = 120   # 120 requests / min per IP
@@ -528,6 +840,10 @@ def _dispatch_api_request(
                 s["total_visits"] = s.get("total_visits", 0) + 1
 
             stats = mutate_stats(_inc_visit)
+            # Funnel visibility: the stored report-lead count rides along
+            # on this response copy only - it is never persisted into the
+            # stats doc itself.
+            stats["leads"] = len(load_leads())
             return 200, {
                 "ok": True,
                 "stats": stats,
@@ -733,47 +1049,9 @@ guard.assert_safe("Critic_Fallback", "Tool_Executor",
             # same compiler + exact #k-SAT engine as the CLI/package path
             # (evaluate_custom_rules -> Autoformalizer trap encoding).
             # No signup, no install; verdicts are computed, never canned.
-            graph = body.get("graph")
-            if graph is None and ("nodes" in body or "edges" in body):
-                graph = body  # the graph object may also be the whole body
-            if isinstance(graph, str):
-                try:
-                    graph = json.loads(graph)
-                except Exception:
-                    graph = None
-            if not isinstance(graph, dict):
-                return 400, {
-                    "ok": False,
-                    "error": "Request body must be JSON of the form {\"graph\": {\"nodes\": [...], \"edges\": [{\"from\": ..., \"to\": ..., \"condition\": ...}], \"terminals\": [...]}}.",
-                }
-            nodes = graph.get("nodes")
-            if not isinstance(nodes, list) or not nodes:
-                return 400, {
-                    "ok": False,
-                    "error": "graph.nodes must be a non-empty list of node ids (strings or {\"id\": ...} objects).",
-                }
-            for nd in nodes:
-                if isinstance(nd, dict):
-                    if not (nd.get("id") or nd.get("name") or nd.get("key")):
-                        return 400, {"ok": False, "error": "Each node object needs an 'id'."}
-                elif not isinstance(nd, str):
-                    return 400, {"ok": False, "error": "graph.nodes entries must be strings or objects with an 'id'."}
-            edges = graph.get("edges", [])
-            if not isinstance(edges, list):
-                return 400, {"ok": False, "error": "graph.edges must be a list of {\"from\", \"to\", \"condition\"} objects."}
-            for ed in edges:
-                if isinstance(ed, dict):
-                    src = ed.get("from") or ed.get("source") or ed.get("src")
-                    dst = ed.get("to") or ed.get("target") or ed.get("dst")
-                    if not src or not dst:
-                        return 400, {"ok": False, "error": "Each edge needs a 'from' and a 'to' node id."}
-                elif isinstance(ed, (list, tuple)) and len(ed) >= 2:
-                    continue
-                else:
-                    return 400, {"ok": False, "error": "Each edge must be an object {\"from\", \"to\", \"condition\"} (or a [from, to] pair)."}
-            terminals = graph.get("terminals", [])
-            if terminals is not None and not isinstance(terminals, list):
-                return 400, {"ok": False, "error": "graph.terminals must be a list of node ids."}
+            graph, graph_error = _extract_graph(body)
+            if graph_error is not None:
+                return graph_error
             try:
                 res = evaluate_custom_rules(json.dumps(graph))
             except ValueError as exc:
@@ -837,6 +1115,59 @@ guard.assert_safe("Critic_Fallback", "Tool_Executor",
                     "your graph was compiled to a trap-encoding CNF and counted exactly - no sampling, no canned verdicts."
                 ),
                 "verdict": "traps_found" if trap_count > 0 else "clean",
+            }
+
+        if path == "/api/report":
+            # Email capture at the value-exchange moment: the visitor just
+            # ran the browser trial and saw their trap count. The server
+            # re-runs the SAME graph itself (client-supplied counts are
+            # never trusted), emails the full report via Resend, and
+            # stores the lead. Send-then-store: a failed send is recorded
+            # as send_failed and answered 502; a stored lead marked
+            # "sent" always means Resend accepted the message. If the
+            # lead write itself fails in DB mode, StorageError surfaces
+            # as a loud 500 via the dispatcher (never a silent success).
+            email = str(body.get("email", "")).strip()[:254]
+            if not _valid_email(email):
+                return 400, {"ok": False, "error": "Please enter a valid email address."}
+            graph, graph_error = _extract_graph(body)
+            if graph_error is not None:
+                return graph_error
+            res, atoms, audit_error = _run_exact_graph_audit(graph)
+            if audit_error is not None:
+                return audit_error
+            cap_hit = _report_cap_hit(load_leads(), email, client_ip)
+            if cap_hit == "email":
+                return 429, {"ok": False, "error": "This email address has already received 3 reports today. Please try again tomorrow."}
+            if cap_hit == "ip":
+                return 429, {"ok": False, "error": "Too many report emails have been sent from this network today. Please try again tomorrow."}
+            subject, text_body, html_body = _build_report(res, atoms)
+            message_id, send_error = _send_report_email(email, subject, text_body, html_body)
+            entry = {
+                "email": email,
+                "ts": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+                "exact_count": int(res["audit"]["exact_count"]),
+                "total_space": 1 << len(atoms),
+                "source": "browser-trial",
+                "ip": client_ip,
+                "status": "sent" if message_id else "send_failed",
+            }
+            append_lead(entry)
+            if not message_id:
+                return 502, {
+                    "ok": False,
+                    "error": (
+                        f"The report email could not be sent: {send_error}. "
+                        "Your audit result above still stands - please try again in a moment."
+                    ),
+                }
+            return 200, {
+                "ok": True,
+                "sent": True,
+                "email": email,
+                "message_id": message_id,
+                "exact_count": entry["exact_count"],
+                "total_space": entry["total_space"],
             }
 
         if path == "/api/manifold/recall":

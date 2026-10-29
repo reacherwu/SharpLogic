@@ -1238,6 +1238,14 @@ curl -fsSL https://sharplogic.vercel.app/install.py | python3 - --token sl_user_
           <button class="btn-brutal dark" onclick="loadTrialExample('clean')">LOAD FIXED EXAMPLE</button>
         </div>
         <div id="trial-result" style="display: none; margin-top: 20px; font-family: var(--font-mono); font-size: 13px; line-height: 1.7;"></div>
+        <div id="trial-report-block" style="display: none; margin-top: 16px; border: 2px solid #238636; padding: 14px; font-family: var(--font-mono); font-size: 13px; line-height: 1.7;">
+          <div style="color: #f0f6fc; margin-bottom: 10px;">Get the full report &mdash; trap witnesses and fix paths, by email.</div>
+          <div style="display: flex; gap: 10px; flex-wrap: wrap;">
+            <input id="trial-report-email" class="brutal-input" type="email" autocomplete="email" placeholder="you@example.com" style="flex: 1 1 260px; min-width: 220px;">
+            <button class="btn-brutal green" id="trial-report-btn" type="button" onclick="sendTrialReport()">EMAIL ME THE FULL REPORT</button>
+          </div>
+          <div id="trial-report-status" aria-live="polite" style="display: none; margin-top: 10px;"></div>
+        </div>
       </div>
     </section>
     <script>
@@ -1263,18 +1271,71 @@ curl -fsSL https://sharplogic.vercel.app/install.py | python3 - --token sl_user_
           ]
         }
       };
+      var lastTrialGraph = null;
+      function hideTrialReport() {
+        lastTrialGraph = null;
+        document.getElementById('trial-report-block').style.display = 'none';
+        var status = document.getElementById('trial-report-status');
+        status.style.display = 'none';
+        status.textContent = '';
+      }
       function loadTrialExample(which) {
         document.getElementById('trial-graph-input').value = JSON.stringify(TRIAL_EXAMPLES[which], null, 2);
         document.getElementById('trial-result').style.display = 'none';
+        hideTrialReport();
       }
       function trialEsc(s) {
         return String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+      }
+      async function sendTrialReport() {
+        var emailInput = document.getElementById('trial-report-email');
+        var btn = document.getElementById('trial-report-btn');
+        var status = document.getElementById('trial-report-status');
+        var email = emailInput.value.trim();
+        status.style.display = 'block';
+        if (!lastTrialGraph) {
+          status.style.color = '#f85149';
+          status.textContent = 'Run an audit first, then request the report for that exact graph.';
+          return;
+        }
+        if (!email) {
+          status.style.color = '#f85149';
+          status.textContent = 'Enter the email address where the full report should go.';
+          emailInput.focus();
+          return;
+        }
+        btn.disabled = true;
+        btn.textContent = 'SENDING...';
+        status.style.color = '#8b949e';
+        status.textContent = 'Re-running this graph on the server and sending the full report...';
+        try {
+          const resp = await fetch('/api/report', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ email: email, graph: lastTrialGraph })
+          });
+          const data = await resp.json();
+          if (!resp.ok || !data.ok || !data.sent) {
+            status.style.color = '#f85149';
+            status.textContent = 'Report not sent: ' + (data.error || ('HTTP ' + resp.status));
+            return;
+          }
+          status.style.color = '#3fb950';
+          status.textContent = 'Report sent to ' + data.email + ' (Resend message ' + data.message_id + ').';
+        } catch (e) {
+          status.style.color = '#f85149';
+          status.textContent = 'Report request failed: ' + e.message;
+        } finally {
+          btn.disabled = false;
+          btn.textContent = 'EMAIL ME THE FULL REPORT';
+        }
       }
       async function runGraphAudit() {
         var box = document.getElementById('trial-result');
         var btn = document.getElementById('trial-run-btn');
         var raw = document.getElementById('trial-graph-input').value;
         var graph;
+        hideTrialReport();
         try {
           graph = JSON.parse(raw);
         } catch (e) {
@@ -1318,6 +1379,8 @@ curl -fsSL https://sharplogic.vercel.app/install.py | python3 - --token sl_user_
           }
           html += '<div style="margin-top: 14px; color: #8b949e;">This trial covers graphs up to 16 condition atoms. Bigger workflow? The full package compiles any graph (up to the 64-variable engine limit) to an exact CNF counter: <code>curl -fsSL https://sharplogic.vercel.app/install.py | python3 -</code></div>';
           box.innerHTML = html;
+          lastTrialGraph = graph;
+          document.getElementById('trial-report-block').style.display = 'block';
         } catch (e) {
           box.innerHTML = '<div style="border: 2px solid #f85149; padding: 14px; color: #f85149;">Request failed: ' + trialEsc(e.message) + '</div>';
         } finally {
@@ -1325,6 +1388,7 @@ curl -fsSL https://sharplogic.vercel.app/install.py | python3 - --token sl_user_
           btn.textContent = 'RUN AUDIT';
         }
       }
+      document.getElementById('trial-graph-input').addEventListener('input', hideTrialReport);
     </script>
 
     <!-- Downstream Irreversibility & Dual-Engine Architecture -->
