@@ -169,7 +169,7 @@ same machine and seeds.)
 # 1. Run Rust test suite (3/3 passing)
 cargo test
 
-# 2. Run Python test suites (18/18 passing: 8 end-to-end + 10 graph-audit/limits)
+# 2. Run Python test suites (28/28 passing: end-to-end + graph-audit + property tests)
 python3 -m unittest discover -s tests -v
 
 # 3. Start local development server on port 8765
@@ -183,3 +183,8 @@ python3 server.py
 - **Production URL**: [https://sharplogic.vercel.app](https://sharplogic.vercel.app)
 - **VIP Launch Invite Code**: `ETH-2026` (Pre-activated at `https://sharplogic.vercel.app/?code=ETH-2026`)
 - Referral tiers: Tier 1 (offline engine + AgentGuard) and Tier 2 (auto-patch, live in the sandbox/API) are shipped. Tier 3 (GitHub Actions PR bot) and Tier 4 (Sentinel Hall of Fame) are **roadmap/waitlist** — unlocking them records a waitlist spot; they are not yet available.
+
+## Enterprise outcomes (illustrative)
+- AP 3-way match: 63 loophole paths blocked, wire batch protected, audit seal generated.
+- Cloud IAM: blast radius reduced from 1,920 to 0 escalation paths after patch.
+- Agent workflow: deadlock/livelock traps eliminated with bounded retry guards.

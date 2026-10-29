@@ -1,0 +1,30 @@
+name: SharpLogic Agent Audit
+
+on:
+  pull_request:
+    paths:
+      - "workflows/**"
+      - "agents/**"
+
+jobs:
+  audit:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: python -m pip install -r requirements.txt
+      - run: cargo build --release
+      - run: |
+          python - <<'PY'
+          import json, sys, os
+          sys.path.insert(0, "python")
+          sys.path.insert(0, ".")
+          from sharplogic import evaluate_custom_rules
+          graph = json.load(open("workflow.json"))
+          res = evaluate_custom_rules(json.dumps(graph))
+          print("trap_count", res["audit"]["exact_count"])
+          if res["audit"]["exact_count"] > 0:
+              raise SystemExit("SharpLogic: traps detected")
+          PY
