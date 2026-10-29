@@ -24,7 +24,7 @@ SCENARIOS: Dict[str, Dict[str, Any]] = {
         "persona_badge": "ENTRY 01 // E-COMMERCE & FINTECH PROMO RADAR",
         "title": "E-Commerce Refund & Stacked Promo Audit",
         "title_zh": "电商大促叠加与售后退款 Agent 防薅精算",
-        "subtitle": "24 Boolean & Linear Conditions • 16,777,216 State Combinations",
+        "subtitle": "24 Boolean Conditions • 16,777,216 State Combinations",
         "natural_language_rules": (
             "1. [VIP Tier] VIP members receive 20% off (8折) on eligible checkout items.\n"
             "2. [New User Promo] First-time or invited users receive an extra ¥50 instant rebate.\n"
@@ -310,7 +310,7 @@ SCENARIOS: Dict[str, Dict[str, Any]] = {
         "persona_badge": "FLAGSHIP 04 // ENTERPRISE AP 3-WAY MATCH & PAYMENT GATEWAY",
         "title": "AP 3-Way Match Exception Clearance & Payment Gate",
         "title_zh": "企业非标应付账款异常三单匹配与付款门禁",
-        "subtitle": "22 ERP, Procurement & Tax Invariants • 4,194,304 State Combinations",
+        "subtitle": "22 Boolean Variables • 18 Invariants • 4,194,304 State Combinations",
         "natural_language_rules": (
             "1. [PO Validation] Invoice must map to an active Purchase Order (PO) line or authorized pending change order.\n"
             "2. [Delivery & QA] Delivery fulfillment requires Goods Received Note (GRN) warehouse sign-off, QA inspection certificate, or exact unit quantity match.\n"
@@ -402,7 +402,7 @@ SCENARIOS: Dict[str, Dict[str, Any]] = {
             "root_cause_clause": "Clause C8, C9, C10 & C12: Invoiced price variance exceeds +5% tolerance without Director signature or supplier credit memo, yet LLM auto-cleared the discrepancy hold.",
             "patched_rule_text": (
                 "PATCHED SMT INVARIANT: (1) Enforce SMT Gate: `require(inv_unit_price_exceeds_5pct == False or procurement_director_signed == True or supplier_credit_memo_issued == True)`. "
-                "(2) Automatically generate SHA-256 signed Audit Clearance Certificate upon satisfaction."
+                "(2) Record the exact-count clearance result (#F = 0) with the full witness trace for auditor review."
             ),
         },
     },

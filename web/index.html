@@ -1065,7 +1065,7 @@
       </h1>
 
       <p class="hero-subtitle">
-        LLMs are great at reading messy invoices, vendor emails, and contract drafts &mdash; but enterprises cannot afford a 0.8% hallucination when paying six-figure wires, signing uncapped liabilities, or modifying cloud permissions. SharpLogic enforces zero-hallucination SMT invariants in microseconds. If <code>#F &gt; 0</code>, disbursement is physically blocked.
+        LLMs are great at reading messy invoices, vendor emails, and contract drafts &mdash; but enterprises cannot afford a 0.8% hallucination when paying six-figure wires, signing uncapped liabilities, or modifying cloud permissions. SharpLogic enforces zero-hallucination SMT invariants — in microseconds on the native Rust engine. If <code>#F &gt; 0</code>, the gate's verdict is BLOCK: the payment is held in your AP system for human review.
       </p>
 
       <!-- VIP Access Strip (Unregistered state) -->
@@ -1122,7 +1122,9 @@ WORKFLOW = {
     "terminals": ["Human_Approval_Gate"],
     "edges": [
         {"from": "Tool_Executor", "to": "Critic_Fallback",
-         "condition": "tool_timeout or execution_error"},
+         "condition": ""},
+        {"from": "Tool_Executor", "to": "Human_Approval_Gate",
+         "condition": "not tool_timeout and not execution_error"},
         {"from": "Critic_Fallback", "to": "Tool_Executor",
          "condition": "retry_prompt_generated and retry_count &lt;= 3"},
         {"from": "Critic_Fallback", "to": "Human_Approval_Gate",
@@ -1351,10 +1353,10 @@ curl -fsSL https://sharplogic.vercel.app/install.py | python3 - --token sl_user_
             Probabilistic LLM Fact Extractor
           </h3>
           <p style="font-size: 13.5px; color: var(--text-muted); line-height: 1.6; margin-bottom: 12px;">
-            <strong>What LLMs are great at:</strong> parsing chaotic PDF scans, handwritten warehouse delivery slips, Slack approvals, and complex vendor email threads into formal fact tuples.
+            <strong>What LLMs are great at:</strong> parsing chaotic PDF scans, handwritten warehouse delivery slips, Slack approvals, and complex vendor email threads into formal fact tuples. <strong>Your stack, not ours:</strong> SharpLogic ships no extractor — facts are supplied by your own extraction layer; the gate below verifies them.
           </p>
           <div style="background: #ffffff; border: 1px solid #d0d7de; border-radius: 4px; padding: 10px; font-family: var(--font-mono); font-size: 12px; color: #24292f;">
-            <strong>Extracted Fact Tuples:</strong><br/>
+            <strong>Example input — fact tuples as supplied by your extraction layer:</strong><br/>
             &bull; PO Number: #1042<br/>
             &bull; Invoiced Price: $540.00 (+7.5% vs PO Baseline $500)<br/>
             &bull; Email Note: "Agreed on freight adjustment with supplier"
@@ -1370,13 +1372,13 @@ curl -fsSL https://sharplogic.vercel.app/install.py | python3 - --token sl_user_
             SharpLogic SMT Symbolic Invariant Gate
           </h3>
           <p style="font-size: 13.5px; color: #8b949e; line-height: 1.6; margin-bottom: 12px;">
-            <strong>Zero Hallucination:</strong> Evaluates 22+ boolean/linear invariants in &lt; 10 &micro;s against master vendor contracts, bank routing records, and dual-authorization matrices.
+            <strong>Zero Hallucination:</strong> Evaluates boolean invariants over the extracted facts (AP benchmark: 22 boolean variables, 18 invariants) in &lt; 10 &micro;s on the native Rust engine — the hosted demo runs the exact Python kernel, tens of µs — against master vendor contracts, bank routing records, and dual-authorization matrices.
           </p>
           <div style="background: #161b22; border: 1px solid #30363d; border-radius: 4px; padding: 10px; font-family: var(--font-mono); font-size: 12px; color: #7ee787;">
             <strong>Deterministic Gate Verdict:</strong><br/>
             &bull; Invoiced &gt; PO +5% Ceiling? <strong>TRUE</strong><br/>
-            &bull; Procurement Director Physical Signed? <strong>FALSE</strong><br/>
-            <span style="color: #ff7b72; font-weight: 700;">&rArr; #F = 63 Loophole States: DISBURSEMENT PHYSICALLY BLOCKED.</span>
+            &bull; Procurement Director Signed? <strong>FALSE</strong><br/>
+            <span style="color: #ff7b72; font-weight: 700;">&rArr; #F = 63 Loophole States: GATE VERDICT: BLOCK — disbursement held for human review.</span>
           </div>
         </div>
       </div>
@@ -1486,7 +1488,7 @@ curl -fsSL https://sharplogic.vercel.app/install.py | python3 - --token sl_user_
           The 3 High-Ticket Scenarios Where LLMs Dare Not Move Money Alone
         </h2>
         <p style="font-size: 15px; color: var(--text-muted); margin: 0;">
-          Validated with procurement, accounting, legal ops, and sysadmins across US, Canada, and global enterprises.
+          Three playbooks for high-stakes approvals. Scenario 01 runs live in the terminal above; Scenarios 02 and 03 are playbook concepts on the roadmap.
         </p>
       </div>
 
@@ -1506,14 +1508,14 @@ curl -fsSL https://sharplogic.vercel.app/install.py | python3 - --token sl_user_
             </ul>
           </div>
           <div style="border-top: 1px solid #e1e4e8; padding-top: 12px; font-family: var(--font-mono); font-size: 12px; font-weight: 700; color: #1a7f37;">
-            ROI: $1,000 ~ $3,500/mo per AP Department
+            Target pricing: $1,000 ~ $3,500/mo per AP Department
           </div>
         </div>
 
         <!-- Card 2 -->
         <div class="scenario-card">
           <div>
-            <span class="scenario-badge secondary">SCENARIO 02 // LEGAL & SALES OPS</span>
+            <span class="scenario-badge secondary">SCENARIO 02 // PLAYBOOK CONCEPT — ROADMAP</span>
             <h3 style="font-size: 18px; font-weight: 800; margin: 0 0 10px 0;">Contract Deviation & Fallback Matrix Gate</h3>
             <p style="font-size: 13.5px; color: var(--text-muted); line-height: 1.6; margin-bottom: 14px;">
               <strong>The Pain:</strong> Enterprise legal review takes 2 weeks, blocking sales closes. Generic AI tools say "the clause looks safe", but an ambiguous "may" vs "shall" triggers millions in uncapped indemnity liability.
@@ -1525,26 +1527,26 @@ curl -fsSL https://sharplogic.vercel.app/install.py | python3 - --token sl_user_
             </ul>
           </div>
           <div style="border-top: 1px solid #e1e4e8; padding-top: 12px; font-family: var(--font-mono); font-size: 12px; font-weight: 700; color: #0969da;">
-            ROI: $20,000 ~ $40,000/yr Legal Budget Saved
+            Target value: $20,000 ~ $40,000/yr legal budget (concept — not yet shipped)
           </div>
         </div>
 
         <!-- Card 3 -->
         <div class="scenario-card">
           <div>
-            <span class="scenario-badge warning">SCENARIO 03 // CLOUD & SEC-OPS</span>
+            <span class="scenario-badge warning">SCENARIO 03 // PLAYBOOK CONCEPT — ROADMAP</span>
             <h3 style="font-size: 18px; font-weight: 800; margin: 0 0 10px 0;">SOC 2 / ISO 27001 Audit Evidence Chain</h3>
             <p style="font-size: 13.5px; color: var(--text-muted); line-height: 1.6; margin-bottom: 14px;">
               <strong>The Pain:</strong> External Big 4 auditors reject black-box LLM compliance summaries. They demand deterministic, mathematically unforgeable access audit proofs with immutable timestamps before signing off.
             </p>
             <ul style="font-family: var(--font-mono); font-size: 12px; color: #57606a; padding-left: 18px; margin: 0 0 16px 0; line-height: 1.6;">
               <li>&bull; Continuous IAM privilege blast radius check</li>
-              <li>&bull; Cryptographic SHA-256 state snapshot sealing</li>
-              <li>&bull; Physical block on unreviewed PR production merges</li>
+              <li>&bull; Verifiable access-graph snapshots for auditor evidence (roadmap)</li>
+              <li>&bull; Gate verdict can block unreviewed PR merges in your CI (roadmap)</li>
             </ul>
           </div>
           <div style="border-top: 1px solid #e1e4e8; padding-top: 12px; font-family: var(--font-mono); font-size: 12px; font-weight: 700; color: #9a6700;">
-            ROI: Non-Negotiable Compliance Survival Gate
+            Target value: compliance evidence gate (concept — not yet shipped)
           </div>
         </div>
       </div>
@@ -1656,7 +1658,7 @@ curl -fsSL https://sharplogic.vercel.app/install.py | python3 - --token sl_user_
         </a>
         <span>&bull; SHARPLOGIC.DEV/ // UNIVERSE '26</span>
       </div>
-      <div id="footer-stats-tag">3,890+ AGENT AUDITS EXECUTED &bull; ZERO DEADLOCKS CERTIFIED</div>
+      <div id="footer-stats-tag">AGENT AUDITS EXECUTED: —</div>
     </div>
   </footer>
 
@@ -1943,7 +1945,7 @@ curl -fsSL https://sharplogic.vercel.app/install.py | python3 - --token sl_user_
         node4.querySelector('.node-name').textContent = 'AP SMT Gate';
         node4.querySelector('.node-sub').textContent = isLoophole ? 'LLM Hallucination' : 'Director Signed';
         node5.querySelector('.node-name').textContent = 'Treasury Wire';
-        node5.querySelector('.node-sub').textContent = isLoophole ? 'Unauthorized $142k' : 'SHA-256 Signed';
+        node5.querySelector('.node-sub').textContent = isLoophole ? 'Unauthorized $142k' : 'Gate Cleared';
       } else if (data.scenario_id === 'ecommerce_promo') {
         node1.querySelector('.node-name').textContent = 'VIP Member';
         node1.querySelector('.node-sub').textContent = '20% Off Tier';
@@ -2040,7 +2042,7 @@ curl -fsSL https://sharplogic.vercel.app/install.py | python3 - --token sl_user_
 
         if (data.ghost_path_summary && data.ghost_path_summary.patched_rule_text) {
           ghostTrace.innerHTML = `
-            <strong style="color: #7ee787;">[CRYPTOGRAPHIC SMT CLEARANCE CERTIFICATE GENERATED]</strong><br />
+            <strong style="color: #7ee787;">[CLEARANCE GATE RESULT — PATCHED RULESET VERIFIED]</strong><br />
             <span style="color: #8b949e; font-size: 11px;">${data.ghost_path_summary.patched_rule_text}</span><br />
             <span style="color: #7ee787; font-weight: 700;">✓ Formally proven: 0 satisfying loophole states across all ${audit.total_space.toLocaleString()} states (UNSAT Core Verified).</span>
           `;
