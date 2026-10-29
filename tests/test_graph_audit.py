@@ -110,6 +110,49 @@ class TestGraphTrapAudit(unittest.TestCase):
         types = {f["type"] for f in res["graph_analysis"]["findings"]}
         self.assertIn("guarded_cycle", types)
 
+    def test_two_node_bounded_retry_via_progress_edge(self):
+        # The exit complements the retry (progress) edge's guard, not the
+        # whole cycle-guard conjunction: the forward edge carries an
+        # unrelated guard.  Under the uniform guarded predicate the
+        # livelock is exempt; the only remaining traps would be genuine
+        # deadlocks, and the success exit rules those out too -> 0.
+        g = {
+            "nodes": [{"id": n} for n in ["Tool_Executor", "Critic_Fallback", "Human_Approval_Gate"]],
+            "terminals": ["Human_Approval_Gate"],
+            "edges": [
+                {"source": "Tool_Executor", "target": "Critic_Fallback", "condition": ""},
+                {"source": "Tool_Executor", "target": "Human_Approval_Gate", "condition": "not tool_timeout and not execution_error"},
+                {"source": "Critic_Fallback", "target": "Tool_Executor", "condition": "retry_prompt_generated and retry_count <= 3"},
+                {"source": "Critic_Fallback", "target": "Human_Approval_Gate", "condition": "not retry_prompt_generated or retry_count > 3"},
+            ],
+        }
+        res = audit(g)
+        self.assertEqual(res["audit"]["exact_count"], 0)
+        types = {f["type"] for f in res["graph_analysis"]["findings"]}
+        self.assertIn("guarded_cycle", types)
+
+    def test_cycle_with_success_exit_missing_counts_only_deadlocks(self):
+        # Same loop as above but Tool_Executor's only exit is error-only:
+        # the livelock is still exempt (progress edge), yet the 4
+        # assignments with no timeout and no error are genuine deadlocks
+        # at Tool_Executor (it has no way forward) and must be counted.
+        g = {
+            "nodes": [{"id": n} for n in ["Tool_Executor", "Critic_Fallback", "Human_Approval_Gate"]],
+            "terminals": ["Human_Approval_Gate"],
+            "edges": [
+                {"source": "Tool_Executor", "target": "Critic_Fallback", "condition": "tool_timeout or execution_error"},
+                {"source": "Critic_Fallback", "target": "Tool_Executor", "condition": "retry_prompt_generated and retry_count <= 3"},
+                {"source": "Critic_Fallback", "target": "Human_Approval_Gate", "condition": "not retry_prompt_generated or retry_count > 3"},
+            ],
+        }
+        res = audit(g)
+        self.assertEqual(res["audit"]["exact_count"], 4)
+        types = {f["type"] for f in res["graph_analysis"]["findings"]}
+        self.assertIn("guarded_cycle", types)
+        self.assertTrue(
+            any("Tool_Executor" in w and "Deadlock" in w for w in res["trap_witness"])
+        )
+
     def test_unguarded_retry_has_traps(self):
         # Exit guarded by the same condition as the loop: when it is
         # false both exits are disabled -> exactly one trap assignment.

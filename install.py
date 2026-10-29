@@ -93,9 +93,13 @@ SAMPLE_LANGGRAPH_PATCHED = {
 #     reachable non-terminal node has every outgoing edge disabled
 #     (deadlock), or a reachable directed cycle / strongly connected
 #     region has all of its exit edges disabled (livelock);
-#   * a cycle whose exit guard is the exact logical complement of the
-#     cycle's own guard conjunction (bounded retry) is guarded, not a
-#     trap; the same exemption applies at region level;
+#   * a cycle is guarded (bounded retry), not a trap, when one of its
+#     edges is a progress edge - a genuinely conditional edge traversed
+#     on every iteration, e.g. a retry-budget edge - and its exits,
+#     taken together, are open whenever that edge's guard fails.  The
+#     same predicate decides every cycle; a region is exempt only when
+#     it consists of a single guarded cycle, otherwise regions count as
+#     traps under the plain rule above;
 #   * terminal nodes are absorbing: their outgoing edges are ignored.
 #
 # The checker enumerates atom valuations, so it refuses graphs with
@@ -251,13 +255,6 @@ def _simple_cycles(nodes, adj):
     return [list(c) for c in cycles]
 
 
-def _is_negation(fn_a, fn_b, atoms):
-    return all(
-        fn_a(dict(zip(atoms, vals))) == (not fn_b(dict(zip(atoms, vals))))
-        for vals in _itertools.product([False, True], repeat=len(atoms))
-    )
-
-
 def audit_graph(graph):
     """Exact trap audit.  Returns a dict with the trap count #F, the
     atom list, structural findings and the first trap witness.
@@ -329,9 +326,26 @@ def audit_graph(graph):
                 if any(en[i] for i in exits):
                     continue
 
-                def cyc_fn(e2, ce=tuple(cyc_edges)):
-                    return all(_dnf_eval(edges[i][2], e2) for i in ce)
-                if any(_is_negation(lambda e2, i=i: _dnf_eval(edges[i][2], e2), cyc_fn, atoms) for i in exits):
+                def exits_fn(e2, ex=tuple(exits)):
+                    return any(_dnf_eval(edges[i][2], e2) for i in ex)
+
+                def _covers(e_star):
+                    # Bounded-retry predicate (identical to the package
+                    # compiler's _cycle_is_guarded): the exits, taken
+                    # together, are open whenever cycle edge e_star's
+                    # guard fails, and that guard is a genuine condition
+                    # (satisfiable and falsifiable).
+                    sat = unsat = False
+                    for vals in _itertools.product([False, True], repeat=len(atoms)):
+                        e2 = dict(zip(atoms, vals))
+                        if _dnf_eval(edges[e_star][2], e2):
+                            sat = True
+                        else:
+                            unsat = True
+                            if not exits_fn(e2):
+                                return False
+                    return sat and unsat
+                if any(_covers(i) for i in cyc_edges):
                     guarded += 1
                     continue
                 trap = ("livelock", " -> ".join(cyc))
@@ -350,12 +364,10 @@ def audit_graph(graph):
                     continue
                 if not any(n in reach for n in comp):
                     continue
-                internal = [i for i, (s, d, _) in enumerate(edges) if s in cset and d in cset]
-
-                def internal_fn(e2, ii=tuple(internal)):
-                    return all(_dnf_eval(edges[i][2], e2) for i in ii)
-                if any(_is_negation(lambda e2, i=i: _dnf_eval(edges[i][2], e2), internal_fn, atoms) for i in exits):
-                    continue  # bounded-retry exemption at region level
+                # No separate region-level exemption: a region counts
+                # as a trap under the plain rule unless the cycle rule
+                # above already decided it (single-cycle regions are
+                # skipped earlier).  This matches the package compiler.
                 ok = True
                 for n in comp:
                     if n not in reach:
@@ -511,8 +523,8 @@ def verify_agent_graph(graph_data, token=""):
         elif f["type"] == "unreachable_node":
             print(f"    \033[93m[structure] unreachable:\033[0m node {f['nodes']} cannot be reached from any entry")
         elif f["type"] == "guarded_cycle":
-            print(f"    \033[92m[structure] guarded cycle:\033[0m a retry loop whose exit guard is the exact "
-                  f"complement of its loop guard (bounded retry) is excluded from trap counting")
+            print(f"    \033[92m[structure] guarded cycle:\033[0m a retry loop whose exits are open whenever "
+                  f"its progress edge guard fails (bounded retry) is excluded from trap counting")
     if res["exact_count"]:
         w = res["witness"] or {}
         print(f"\033[1;31m[!] TRAPS FOUND: #F = {res['exact_count']} of {res['total_assignments']:,} "

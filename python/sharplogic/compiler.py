@@ -139,10 +139,15 @@ class Autoformalizer:
     # assignments: every auxiliary variable (reachability, canonical
     # support, trap witnesses) is functionally determined by the
     # condition variables, so the engine's exact count #F is exactly the
-    # number of trap assignments.  A cycle whose exit guard is the exact
-    # logical complement of the cycle's own guard conjunction (the
-    # bounded-retry pattern "retry while A, exit when not A") is
-    # reported as guarded and excluded from the trap formula.
+    # number of trap assignments.  One documented carve-out: a cycle is
+    # reported as guarded (bounded-retry pattern) and excluded from the
+    # trap formula when one of its edges is a progress edge - a genuinely
+    # conditional edge traversed on every iteration, e.g. a retry-budget
+    # edge - and the cycle's exits, taken together, are open whenever
+    # that edge's guard fails (see _cycle_is_guarded).  The same
+    # predicate decides every cycle and every region; a region is exempt
+    # only when it consists of a single guarded cycle.  Multi-cycle
+    # regions are counted under the plain semantics above.
     # Known boundary (reported in graph_analysis.limitations when it
     # occurs): reachability grounding is exact for SCCs whose cycles
     # are entered from outside the cycle; a tangle of mutually feeding
@@ -233,28 +238,64 @@ class Autoformalizer:
         return False
 
     @classmethod
-    def _multi_guard_is_negation(
+    def _exits_cover_edge_failure(
         cls,
-        guard_list: List[List[List[Tuple[str, bool]]]],
-        exit_guard: List[List[Tuple[str, bool]]],
+        exit_guards: List[List[List[Tuple[str, bool]]]],
+        edge_guard: List[List[Tuple[str, bool]]],
     ) -> bool:
-        """True iff exit_guard == NOT (all guards in guard_list hold),
-        checked exhaustively over the atoms involved (>12 atoms -> False)."""
+        """True iff whenever ``edge_guard`` fails, at least one of
+        ``exit_guards`` holds - i.e. (OR of exit_guards) OR edge_guard is
+        a tautology - and ``edge_guard`` is a genuine condition
+        (satisfiable and falsifiable: an unconditional edge never fails,
+        so it cannot be the progress edge of a bounded-retry loop, and a
+        never-enabled edge cannot be traversed at all).  Checked
+        exhaustively over the atoms involved (>12 atoms -> False)."""
         atoms = set()
-        for g in guard_list:
+        for g in exit_guards + [edge_guard]:
             for conj in g:
                 atoms.update(a for a, _ in conj)
-        for conj in exit_guard:
-            atoms.update(a for a, _ in conj)
         atoms = sorted(atoms)
         if not atoms or len(atoms) > 12:
             return False
+        edge_sat = False
+        edge_unsat = False
         for mask in range(1 << len(atoms)):
             env = {a: bool(mask >> i & 1) for i, a in enumerate(atoms)}
-            conj_all = all(cls._dnf_eval(g, env) for g in guard_list)
-            if cls._dnf_eval(exit_guard, env) == conj_all:
-                return False
-        return True
+            if cls._dnf_eval(edge_guard, env):
+                edge_sat = True
+            else:
+                edge_unsat = True
+                if not any(cls._dnf_eval(g, env) for g in exit_guards):
+                    return False
+        return edge_sat and edge_unsat
+
+    @classmethod
+    def _cycle_is_guarded(
+        cls,
+        cycle_guards: List[List[List[Tuple[str, bool]]]],
+        exit_guards: List[List[List[Tuple[str, bool]]]],
+    ) -> bool:
+        """The single bounded-retry (guarded cycle) predicate, applied
+        identically to every cycle and every region in this compiler (and
+        mirrored by the standalone checker in install.py).
+
+        A cycle is guarded iff some cycle edge is a *progress edge* -
+        a genuinely conditional edge traversed on every loop iteration,
+        such as a retry-budget edge - and the cycle's exits, taken
+        together, are open whenever that edge's guard fails: formally,
+        (OR of exit guards) OR (progress edge guard) is a tautology for
+        some cycle edge.  The classic shape "retry while A, exit when
+        not A" is the single-edge case; the exit condition may be split
+        across several exit edges, and other cycle edges may carry
+        unrelated guards, without changing the verdict.  What matters is
+        only that the loop's progress condition, once exhausted, always
+        leaves an exit open.
+        """
+        if not exit_guards:
+            return False
+        return any(
+            cls._exits_cover_edge_failure(exit_guards, g) for g in cycle_guards
+        )
 
     @staticmethod
     def _tarjan_scc(
@@ -579,9 +620,9 @@ class Autoformalizer:
                 exits = cycle_exit_eis(cyc)
                 if any(kind(ei) == "always" for ei in exits):
                     continue  # an always-on exit can never be disabled
-                if any(
-                    cls._multi_guard_is_negation([edges[x]["guard"] for x in cyc], edges[ei]["guard"])
-                    for ei in exits
+                if cls._cycle_is_guarded(
+                    [edges[x]["guard"] for x in cyc],
+                    [edges[ei]["guard"] for ei in exits],
                 ):
                     guarded_cycles += 1
                     continue
@@ -592,7 +633,7 @@ class Autoformalizer:
                     "type": "guarded_cycle",
                     "severity": "info",
                     "nodes": [],
-                    "detail": f"{guarded_cycles} cycle(s) have an exit guard that is the exact logical complement of the cycle guard (bounded-retry pattern) and are excluded from trap counting.",
+                    "detail": f"{guarded_cycles} cycle(s) are bounded-retry patterns: whenever the cycle's progress edge guard fails (e.g. a retry budget is exhausted), an exit is open, and are excluded from trap counting.",
                 }
             )
 
@@ -607,21 +648,13 @@ class Autoformalizer:
             ]
             if any(kind(ei) == "always" for ei in exits):
                 continue
-            single = [
-                c
-                for c in trap_cycles
-                if cycle_members(c) == comp
-            ]
-            if single and len(cycles_by_scc.get(si, [])) == 1:
-                continue  # already witnessed precisely by its only cycle
-            internal = [
-                ei for n in comp for ei in out_adj[n] if edges[ei]["dst"] in comp
-            ]
-            if any(
-                cls._multi_guard_is_negation([edges[x]["guard"] for x in internal], edges[ei]["guard"])
-                for ei in exits
-            ):
-                continue  # bounded-retry exemption at region level
+            cycs = cycles_by_scc.get(si, [])
+            if len(cycs) == 1 and cycle_members(cycs[0]) == comp:
+                continue  # single-cycle region: the uniform cycle rule
+                # above has already decided it - witnessed precisely by
+                # its only cycle, or exempt as a guarded cycle.  Regions
+                # with several cycles get no separate exemption: they are
+                # counted under the plain trap semantics.
             trap_sccs.append(si)
 
         # ---------------- relevance closure ----------------
@@ -1037,8 +1070,12 @@ class Autoformalizer:
             "trap_semantics": (
                 "#F counts condition assignments under which a reachable non-terminal node is "
                 "deadlocked (all outgoing edges disabled) or a cycle/region is reachable with its "
-                "cycle edges enabled and all of its exits disabled (livelock). Guarded cycles whose "
-                "exit guard is the exact complement of the cycle guard are excluded."
+                "cycle edges enabled and all of its exits disabled (livelock). Bounded-retry cycles "
+                "are excluded under one uniform rule: a cycle is guarded when one of its edges is a "
+                "progress edge (a genuinely conditional edge traversed on every iteration, e.g. a "
+                "retry-budget edge) and its exits, taken together, are open whenever that edge's "
+                "guard fails. A region is exempt only when it consists of a single guarded cycle; "
+                "multi-cycle regions are counted under the plain semantics."
             ),
         }
         log.append(
