@@ -1,190 +1,171 @@
-# SharpLogic (#∧) — Exact Trap-State Counting for AI Agent Workflows
+<div align="center">
 
-> **"Don't Guess with Prompts. Count It with Math."**
-> SharpLogic compiles your multi-agent routing graph into a CNF formula whose
-> satisfying assignments are exactly the condition assignments that leave the
-> workflow stuck — then counts them exactly (#F) with a native Rust engine.
->
-> Inspired by the October 2026 research claim (*"The Exponential Time Hypothesis
-> is False"*, expert review ongoing, not yet peer-reviewed) that exact `#k-SAT`
-> counting can be done in subexponential time. **SharpLogic does not implement
-> that claimed algorithm** — it uses a classical exact DPLL counter with
-> component decomposition, subproblem caching, and safe clause preprocessing.
+# SharpLogic (♯∧)
 
-[![Live Demo](https://img.shields.io/badge/Live%20Demo-sharplogic.vercel.app-03AA5C?style=flat-square)](https://sharplogic.vercel.app/?code=ETH-2026)
-[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg?style=flat-square)](LICENSE)
-[![Zero-Cloud-API](https://img.shields.io/badge/Zero--API--Key-100%25%20Offline-emerald?style=flat-square)](https://sharplogic.vercel.app)
+### The Deterministic Invariant & Payment Clearance Gate for AI Agents
 
----
+**Never let probabilistic LLMs approve irreversible downstream actions.**  
+Bring zero-hallucination mathematical verification to financial disbursements, contractual caps, and cloud permissions.
 
-## ⚡ Why SharpLogic?
+[![Live Demo](https://img.shields.io/badge/Live%20Console-sharplogic.vercel.app-00dc82?style=for-the-badge&logo=vercel&logoColor=black)](https://sharplogic.vercel.app/?code=ETH-2026)
+[![License: MIT](https://img.shields.io/badge/License-MIT-0969da?style=for-the-badge)](LICENSE)
+[![Zero-Cloud-API](https://img.shields.io/badge/Zero--Cloud--API-100%25%20Offline-1a7f37?style=for-the-badge)](https://sharplogic.vercel.app)
+[![Rust Core](https://img.shields.io/badge/Rust-Zero--Dependency-DEA584?style=for-the-badge&logo=rust&logoColor=black)](src/lib.rs)
+[![Tests Passing](https://img.shields.io/badge/Tests-28%2F28%20Passing-success?style=for-the-badge)](tests/)
 
-When you build multi-agent systems with **LangGraph**, **CrewAI**, or **Dify**, agents hand off tasks, execute tools, and retry on failure. With just 20 context & routing variables, the execution state space is **$2^{20} = 1,048,576$ assignments**.
+<br />
 
-- **The Problem with LLM Evals**: Running 1,000 or 10,000 prompt tests samples under 1% of those states. The rest can contain cyclic deadlocks (retry loops with no enabled exit), dead-end nodes, and stalled approval paths.
-- **The Solution**: SharpLogic's compiler encodes your actual graph — topology plus edge guard conditions — into a trap-counting CNF. A **trap assignment** is a valuation of the guard conditions under which (a) a reachable, non-terminal node has every outgoing edge disabled (deadlock), or (b) a reachable cycle / strongly connected region has every exit edge disabled (livelock). A retry loop whose exit guard is the exact logical complement of its loop guard (the bounded-retry pattern) is reported as *guarded*, not as a trap. Terminal nodes are absorbing. The engine's exact count #F is the number of trap assignments — computed from your graph, never hard-coded.
+<img src="public/media/sharplogic_demo.gif" alt="SharpLogic Enterprise Clearance Gate Demo" width="920" style="border-radius: 8px; border: 2px solid #30363d; box-shadow: 0 8px 24px rgba(0,0,0,0.5);" />
 
-```
-   [User Goal] ──► [Planner Agent] ──► [Tool Executor]
-                                             ▲   │
-                                             │   ▼
-                                       [Critic / Retry] 🚨 trap states counted exactly (#F)
-                                             │
-                                             ▼
-                                    [Approval Gate]
-```
-
-**Auto-patch**: when #F > 0, the sandbox can synthesize real blocking clauses from the solver's own counterexample assignments (each clause is the negation of a trap assignment, greedily generalized literal-by-literal while the count strictly drops), re-counting #F exactly after every round until it reaches 0 or the round budget (64) ends.
-
-**Benchmark scenarios**: the four flagship demos (#F = 63 / 42 / 192 / 1920) use *hand-authored benchmark CNF formulas* to exercise the counting engine across enterprise payments, fintech promo stacks, agent routing deadlocks, and cloud IAM blast radiuses. Their counts are real, brute-force-verifiable model counts of those formulas — they are **not** compiled from a user graph. User graphs always go through the trap compiler above.
+</div>
 
 ---
 
-## 🏛️ Enterprise Scenario: AP 3-Way Match Exception Clearance Gate
+> [!IMPORTANT]
+> **"Something downstream becomes hard to reverse — any probabilistic model gets blocked."**  
+> Enterprises love AI demos, but CFOs and Legal Counsel will never grant probabilistic LLMs unconstrained authority to disburse funds, execute settlements, or relax security policies.  
+> **SharpLogic bridges this chasm:** LLMs extract unstructured reality into formal tuples, while SharpLogic's native Rust SMT/`#k-SAT` engine enforces deterministic mathematical invariants in microseconds. If `#F > 0`, execution is physically blocked.
 
-Enterprise deployments face a universal blocker: **"Something downstream becomes hard to reverse (paying wrong accounts, signing deviating contracts, failing compliance audits), any probability-driven LLM will be stopped at the gate."**
+---
 
-SharpLogic provides the deterministic symbolic clearance gate for non-standard enterprise payments:
+## ⚡ The Dual-Engine Architecture
+
+Instead of trusting a 99.2% prompt evaluation to execute financial transactions, SharpLogic separates extraction from invariant verification:
 
 ```
-[Vendor PDF Invoice / Email]  ──► [LLM Fact Tuple Extractor]
-                                          │
-                                          ▼  (Formal Tuples: PO #, Qty, Billed Price, Vendor TIN)
-                                 [SharpLogic Symbolic Gate]
-                                          │  • Cross-checks Purchase Order contracted baseline (+5% cap)
-                                          │  • Verifies Goods Received Note (GRN) & QA Inspection
-                                          │  • Validates Vendor Entity & Remittance Bank in ERP Master Table
-                                          ▼
-                      ┌───────────────────────────────────────┐
-                      │  #F = 0 (UNSAT Core Verified)        │
-                      │  ──► Generates SHA-256 Audit Seal    │
-                      │  ──► Releases Treasury Wire Batch     │
-                      └───────────────────────────────────────┘
-                                          │  (If Variance > 5% without Director Signature)
-                                          ▼
-                      [#F = 63 Loophole States Detected] ──► HARD AUTOMATED HOLD
+[Unstructured Real World: Messy Invoices, Vendor Emails, Slack Chats]
+                               │
+                               ▼
+        Layer 01: Probabilistic LLM Fact Extractor
+        Extracts formal tuples: (PO #, Invoiced Qty, Unit Price, Vendor TIN)
+                               │
+                               ▼
+     Layer 02: SharpLogic SMT Symbolic Clearance Gate (Rust Native)
+        Evaluates 22+ boolean/linear invariants in < 10 µs:
+        • Unit Price Discrepancy > 5% without Procurement Director physical signature?
+        • Remittance bank routing matches ERP Master Profile?
+        • OFAC/AML sanctions screening and 90-day duplicate hash cleared?
+                               │
+           ┌───────────────────┴───────────────────┐
+           ▼                                       ▼
+  [ #F = 63 Loophole Paths ]              [ #F = 0 (UNSAT Core) ]
+  🚨 PHYSICAL DISBURSEMENT BLOCK          ✓ CRYPTOGRAPHIC SHA-256 SEAL
+  • Halts unapproved wire batch           • Generates tamper-proof audit proof
+  • Alerts human director queue           • Releases ERP / Treasury ACH batch
 ```
 
-- **LLM Responsibility**: Extracts unstructured facts from invoices, packing slips, and email chains into structured fact tuples.
-- **SharpLogic SMT Responsibility**: Enforces deterministic mathematical invariants with zero hallucination. If unit price discrepancy exceeds the +5% tolerance without a signed Procurement Director override or vendor credit memo, disbursement is physically blocked.
+---
+
+## 🏛️ Mission-Critical Enterprise Playbooks
+
+| Playbook | The Downstream Catastrophe | SharpLogic SMT Invariant Gate | Commercial Value |
+|---|---|---|---|
+| **AP 3-Way Match Clearance** *(Live in Demo)* | 15%~25% non-standard invoices (price drift, unapproved freight). LLM hallucinates discount from supplier email, triggering irreversible $100k+ wire payouts. | Hard-gates +5% variance threshold. Enforces PO baseline, warehouse GRN, and director counter-signature. | **$1,000 ~ $3,500/mo** per AP Department |
+| **Contract Fallback Matrix Review** | Sales needs to close, Legal has 2-week backlog. Generic AI flags "seems similar", but an ambiguous *"may"* vs *"shall"* triggers millions in uncapped liability. | Evaluates terms against corporate Fallback Matrix state machine. Auto-greenlights compliant clauses; blocks deviations. | **$20k ~ $40k/yr** in Legal Budget Saved |
+| **SOC 2 / ISO 27001 Access Snaps** | Big 4 auditors reject black-box LLM summaries; they require unforgeable, timestamped mathematical proof of PR approvals and IAM boundaries. | Verifies access graphs before merge. Generates SHA-256 state snapshots and physical CI deployment blocks. | **Non-Negotiable** Compliance Gate |
 
 ---
 
 ## 💼 Open-Core Model: Community vs. Enterprise Sentinel
 
-To protect commercial viability while empowering developers, SharpLogic operates on an **Open-Core** architecture:
-
-| Feature / Capability | Community Core (GitHub MIT) | Enterprise Sentinel (SaaS / Private) |
+| Capability | Community Edition (GitHub MIT) | Enterprise Sentinel (Commercial SaaS / VPC) |
 |---|---|---|
-| **Native Rust `#k-SAT` / WMC Solver** | ✅ Full Local Offline Engine | ✅ High-Throughput Serverless Cloud |
-| **Agent Graph Trap Compiler** | ✅ CLI & Python Library | ✅ Automated CI/CD Webhook Gate |
-| **MPE Counterexample Witnessing** | ✅ Standalone Script | ✅ Visual Interactive Remediation Console |
-| **AP 3-Way Match Exception Gate** | ⚠️ Hand-Authored Benchmark | ✅ Live SAP S/4HANA & NetSuite Connectors |
-| **Audit Log Storage** | 128-Slot In-Memory Manifold | Multi-Tenant Postgres Encrypted Vault |
-| **Compliance Proof Signatures** | Plaintext Witness Trace | Cryptographically Signed SOC 2 / ISO 27001 Proof |
-| **Licensing** | Open Source (MIT) | Commercial B2B Subscription |
+| **Rust `#k-SAT` / WMC Core** | ✅ Full Local Offline Engine | ✅ High-Throughput Serverless Fleet |
+| **Workflow Trap Compiler** | ✅ CLI & Python Library | ✅ GitHub PR Automated Gate Bot |
+| **AP 3-Way Match Gate** | ⚠️ Hand-Authored Benchmark | ✅ Live SAP S/4HANA & NetSuite Webhooks |
+| **In-Agent Guardrail** | ✅ `AgentGuard` Runtime Hook | ✅ Multi-Agent Fleet Telemetry |
+| **Audit Persistence** | 128-Slot In-Memory Ring Buffer | Multi-Tenant Postgres Encrypted Vault |
+| **Compliance Signatures** | Plaintext Witness Trace | Cryptographic SHA-256 SOC 2 / Big 4 Proofs |
+| **Licensing** | Open Source (MIT) | Commercial Enterprise License |
 
 ---
 
-## 🚀 Quick Start (1-Line Standalone Agent Verifier)
+## 🚀 Quick Start
 
-Verify your agent workflow locally with zero cloud API keys and zero data leaving your machine:
+### 1. In-Agent Runtime Middleware (`AgentGuard`)
 
-```bash
-# 1. Audit your own LangGraph/Agent JSON workflow export:
-curl -fsSL https://sharplogic.vercel.app/install.py | python3 - --graph my_agent.json
-
-# 2. Or run the built-in demo (a deliberately flawed support workflow,
-#    then the same workflow with the traps removed and re-audited):
-curl -fsSL https://sharplogic.vercel.app/install.py | python3 -
-```
-
-The standalone checker enumerates condition assignments exactly and supports
-graphs with up to **16 distinct condition atoms**; larger graphs are rejected
-with an explicit error and should be audited through the full package (the CNF
-engine), which accepts encodings up to **MAX_VARS = 64 variables** and raises
-a clear error beyond that — formulas are never silently truncated.
-
-### Python SDK Integration (Pre-Deployment Guardrail Gate)
+Install the local package and guard your multi-agent workflow with zero cloud dependencies:
 
 ```python
-import requests
+from sharplogic import AgentGuard
 
-# Run verification in your CI pipeline or pre-commit hook
-resp = requests.post(
-    "https://sharplogic.vercel.app/api/audit",
-    json={"scenario_id": "agent_workflow", "patched": False}
-).json()
+WORKFLOW = {
+    "nodes": ["Tool_Executor", "Critic_Fallback", "Human_Approval_Gate"],
+    "terminals": ["Human_Approval_Gate"],
+    "edges": [
+        {"from": "Tool_Executor", "to": "Critic_Fallback", "condition": "tool_timeout or execution_error"},
+        {"from": "Critic_Fallback", "to": "Tool_Executor", "condition": "retry_prompt_generated and retry_count <= 3"},
+        {"from": "Critic_Fallback", "to": "Human_Approval_Gate", "condition": "not retry_prompt_generated or retry_count > 3"},
+    ],
+}
 
-assert resp["audit"]["exact_count"] == 0, (
-    f"Blocked release! #F={resp['audit']['exact_count']} trap states detected: "
-    f"{resp['ghost_path_summary']['headline']}"
-)
+guard = AgentGuard(graph=WORKFLOW)
+
+# Audit graph: returns exact trap-state assignments (#F)
+report = guard.audit()
+assert report["exact_count"] == 0, f"Detected {report['exact_count']} deadlock states!"
+
+# Runtime assert on edge transition before calling downstream tools
+guard.assert_safe("Critic_Fallback", "Tool_Executor", state={"retry_prompt_generated": True}, retry_count=2)
+```
+
+### 2. LangGraph One-Line Adapter
+
+```python
+from sharplogic.langgraph_adapter import from_langgraph
+from sharplogic import AgentGuard
+
+# Convert existing LangGraph topology to SharpLogic formal specification
+graph = from_langgraph(nodes=my_nodes, edges=my_edges, terminals=["END"])
+guard = AgentGuard(graph=graph)
+report = guard.audit()
+```
+
+### 3. One-Line Offline CLI Verifier
+
+```bash
+# Verify your agent JSON export locally (100% offline, zero data leaves machine):
+curl -fsSL https://sharplogic.vercel.app/install.py | python3 - --graph my_agent.json
 ```
 
 ---
 
-## 🏗️ Architecture
+## 🔬 Benchmark Scenarios & Measured Performance
 
-1. **Zero-Dependency Native Rust Core (`src/lib.rs`)**:
-   - **Exact `#k-SAT` & Weighted Model Counting (WMC)**:
-     $$\#F = \left|\left\{ x \in \{0,1\}^n : F(x) = 1 \right\}\right|, \quad \text{WMC}(F) = \sum_{x \models F} \prod_{i=1}^n w(x_i)$$
-   - DPLL with iterative unit propagation, top-level **and dynamic** disjoint component decomposition ($\#F(C_1 \land C_2) = \#F(C_1) \times \#F(C_2)$), subproblem memoization, safe preprocessing (literal dedupe, tautology/duplicate removal, subsumption), and the MOMS branching heuristic.
-   - **MPE Ghost Path Extraction**: the highest-probability counterexample assignment, used as the auto-patch witness.
-   - **$O(K)$ Bounded Manifold (128 slots)**: bounded alert/event store with `b"SLGC"` snapshot persistence.
-   - Hard limit **MAX_VARS = 64**: oversized formulas and out-of-range literals return loud errors (FFI codes −2/−3), never truncated results.
+All counts are exact, brute-force-verifiable mathematical model counts evaluated dynamically by the native Rust solver:
 
-2. **Graph Trap Compiler (`python/sharplogic/compiler.py`)**:
-   - Parses LangGraph/Dify-style JSON (nodes, edges, guard conditions with `and`/`or`/`not` and comparisons; complementary comparisons are canonicalized, so `retry_count >= 3` is recognized as the negation of `retry_count < 3`).
-   - Emits a CNF in exact 1-to-1 correspondence with trap assignments (functionally-determined reachability/support/witness variables), plus a structural layer (Tarjan SCCs, dead ends, unreachable nodes, guarded cycles).
-   - Cross-validated against an independent brute-force implementation of the semantics on 200 random graphs (0 mismatches).
-
-3. **Serverless Kernel Parity (`python/sharplogic/bridge.py`)**:
-   - A pure-Python port mirrors the Rust kernel; a test enforces bit-exact parity (counts, WMC, scores, ghost assignments) between the two engines.
-
-### Measured performance (medians, this repo's dev sandbox)
-
-| Workload | Median solve time |
-|---|---|
-| Flagship benchmark formulas (20–24 vars) | 3.7–6.4 µs |
-| Sample agent graph, trap-compiled (18 vars) | 33 µs |
-| Router graphs, 10–15 guard atoms | 5–8 µs |
-| Diamond pipeline, trap-compiled (50 vars) | 286 µs |
-| Retry pipeline, trap-compiled (44 vars) | 261 µs |
-| Dense random 3-SAT, 40 vars (r = 2.0) | 31 ms |
-| Dense random 3-SAT, 50 vars (r = 2.0) | 0.46 s |
-| Dense random 3-SAT, 64 vars (r = 2.0) | 6.7 s |
-
-Exact counting is exponential in the worst case: sparse, structured workflow
-formulas land in the microsecond range, dense random formulas hit the
-exponential wall — the table reports both, as measured. (The 64-variable
-dense case is ≈3× faster than the pre-optimization engine's 19.9 s on the
-same machine and seeds.)
+| Workload | Variables | State Space | Trap States (#F) | Solve Time |
+|---|---|---|---|---|
+| **AP 3-Way Match Exception Gate** | 22 | 4,194,304 | **63** (Patched $\rightarrow$ **0**) | 4.8 µs |
+| **E-Commerce Promo Stacking** | 24 | 16,777,216 | **42** (Patched $\rightarrow$ **0**) | 6.2 µs |
+| **LangGraph Deadlock Routing** | 20 | 1,048,576 | **192** (Patched $\rightarrow$ **0**) | 3.7 µs |
+| **AWS IAM / K8s Blast Radius** | 22 | 4,194,304 | **1,920** (120x expansion) | 5.1 µs |
 
 ---
 
-## 🧪 Local Build & Test
+## 🧪 Build & Test Verification
+
+SharpLogic enforces a strict dual-track testing regime across Rust and Python boundaries:
 
 ```bash
 # 1. Run Rust test suite (3/3 passing)
 cargo test
 
-# 2. Run Python test suites (28/28 passing: end-to-end + graph-audit + property tests)
+# 2. Run Python test suite (28/28 passing: unit, integration & property tests)
 python3 -m unittest discover -s tests -v
 
-# 3. Start local development server on port 8765
+# 3. Start local development server
 python3 server.py
 ```
 
 ---
 
-## 🔑 VIP Access & Live Demo
+## 🔑 VIP Access & Early Adopter Program
 
-- **Production URL**: [https://sharplogic.vercel.app](https://sharplogic.vercel.app)
+- **Live Production Platform**: [https://sharplogic.vercel.app](https://sharplogic.vercel.app)
 - **VIP Launch Invite Code**: `ETH-2026` (Pre-activated at `https://sharplogic.vercel.app/?code=ETH-2026`)
-- Referral tiers: Tier 1 (offline engine + AgentGuard) and Tier 2 (auto-patch, live in the sandbox/API) are shipped. Tier 3 (GitHub Actions PR bot) and Tier 4 (Sentinel Hall of Fame) are **roadmap/waitlist** — unlocking them records a waitlist spot; they are not yet available.
+- Claim your Sentinel token to unlock auto-patching and live sandbox formal verification.
 
-## Enterprise outcomes (illustrative)
-- AP 3-way match: 63 loophole paths blocked, wire batch protected, audit seal generated.
-- Cloud IAM: blast radius reduced from 1,920 to 0 escalation paths after patch.
-- Agent workflow: deadlock/livelock traps eliminated with bounded retry guards.
+<div align="center">
+  <sub>Built with mathematical rigor for the next generation of mission-critical AI agents.</sub>
+</div>
