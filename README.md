@@ -36,7 +36,53 @@ When you build multi-agent systems with **LangGraph**, **CrewAI**, or **Dify**, 
 
 **Auto-patch**: when #F > 0, the sandbox can synthesize real blocking clauses from the solver's own counterexample assignments (each clause is the negation of a trap assignment, greedily generalized literal-by-literal while the count strictly drops), re-counting #F exactly after every round until it reaches 0 or the round budget (64) ends.
 
-**Benchmark scenarios**: the three flagship demos (#F = 42 / 192 / 1920) use *hand-authored benchmark CNF formulas* to exercise the counting engine. Their counts are real, brute-force-verifiable model counts of those formulas — they are **not** compiled from a user graph. User graphs always go through the trap compiler above.
+**Benchmark scenarios**: the four flagship demos (#F = 63 / 42 / 192 / 1920) use *hand-authored benchmark CNF formulas* to exercise the counting engine across enterprise payments, fintech promo stacks, agent routing deadlocks, and cloud IAM blast radiuses. Their counts are real, brute-force-verifiable model counts of those formulas — they are **not** compiled from a user graph. User graphs always go through the trap compiler above.
+
+---
+
+## 🏛️ Enterprise Scenario: AP 3-Way Match Exception Clearance Gate
+
+Enterprise deployments face a universal blocker: **"Something downstream becomes hard to reverse (paying wrong accounts, signing deviating contracts, failing compliance audits), any probability-driven LLM will be stopped at the gate."**
+
+SharpLogic provides the deterministic symbolic clearance gate for non-standard enterprise payments:
+
+```
+[Vendor PDF Invoice / Email]  ──► [LLM Fact Tuple Extractor]
+                                          │
+                                          ▼  (Formal Tuples: PO #, Qty, Billed Price, Vendor TIN)
+                                 [SharpLogic Symbolic Gate]
+                                          │  • Cross-checks Purchase Order contracted baseline (+5% cap)
+                                          │  • Verifies Goods Received Note (GRN) & QA Inspection
+                                          │  • Validates Vendor Entity & Remittance Bank in ERP Master Table
+                                          ▼
+                      ┌───────────────────────────────────────┐
+                      │  #F = 0 (UNSAT Core Verified)        │
+                      │  ──► Generates SHA-256 Audit Seal    │
+                      │  ──► Releases Treasury Wire Batch     │
+                      └───────────────────────────────────────┘
+                                          │  (If Variance > 5% without Director Signature)
+                                          ▼
+                      [#F = 63 Loophole States Detected] ──► HARD AUTOMATED HOLD
+```
+
+- **LLM Responsibility**: Extracts unstructured facts from invoices, packing slips, and email chains into structured fact tuples.
+- **SharpLogic SMT Responsibility**: Enforces deterministic mathematical invariants with zero hallucination. If unit price discrepancy exceeds the +5% tolerance without a signed Procurement Director override or vendor credit memo, disbursement is physically blocked.
+
+---
+
+## 💼 Open-Core Model: Community vs. Enterprise Sentinel
+
+To protect commercial viability while empowering developers, SharpLogic operates on an **Open-Core** architecture:
+
+| Feature / Capability | Community Core (GitHub MIT) | Enterprise Sentinel (SaaS / Private) |
+|---|---|---|
+| **Native Rust `#k-SAT` / WMC Solver** | ✅ Full Local Offline Engine | ✅ High-Throughput Serverless Cloud |
+| **Agent Graph Trap Compiler** | ✅ CLI & Python Library | ✅ Automated CI/CD Webhook Gate |
+| **MPE Counterexample Witnessing** | ✅ Standalone Script | ✅ Visual Interactive Remediation Console |
+| **AP 3-Way Match Exception Gate** | ⚠️ Hand-Authored Benchmark | ✅ Live SAP S/4HANA & NetSuite Connectors |
+| **Audit Log Storage** | 128-Slot In-Memory Manifold | Multi-Tenant Postgres Encrypted Vault |
+| **Compliance Proof Signatures** | Plaintext Witness Trace | Cryptographically Signed SOC 2 / ISO 27001 Proof |
+| **Licensing** | Open Source (MIT) | Commercial B2B Subscription |
 
 ---
 

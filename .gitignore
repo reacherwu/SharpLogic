@@ -22,3 +22,5 @@ Thumbs.db
 
 # Large temporary files
 /tmp/
+scratch/
+sharplogic_*.json

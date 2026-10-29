@@ -315,7 +315,7 @@ def ensure_seeded() -> None:
     if not _SEEDED:
         with _SEED_LOCK:
             if not _SEEDED:
-                for sid in ["ecommerce_promo", "agent_workflow", "cloud_iam"]:
+                for sid in ["ecommerce_promo", "agent_workflow", "cloud_iam", "ap_invoice_matching"]:
                     evaluate_scenario(sid, apply_patch=False)
                 _SEEDED = True
 
@@ -348,7 +348,7 @@ def dispatch_api_request(
         if path == "/api/scenarios":
             summary = [
                 evaluate_scenario(sid, apply_patch=False)
-                for sid in ["ecommerce_promo", "agent_workflow", "cloud_iam"]
+                for sid in ["ecommerce_promo", "agent_workflow", "cloud_iam", "ap_invoice_matching"]
             ]
             return 200, {"scenarios": summary}
         if path == "/api/audit":

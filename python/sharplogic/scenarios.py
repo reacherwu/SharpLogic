@@ -304,6 +304,108 @@ SCENARIOS: Dict[str, Dict[str, Any]] = {
             ),
         },
     },
+    "ap_invoice_matching": {
+        "id": "ap_invoice_matching",
+        "formula_origin": "hand_authored_benchmark",
+        "persona_badge": "FLAGSHIP 04 // ENTERPRISE AP 3-WAY MATCH & PAYMENT GATEWAY",
+        "title": "AP 3-Way Match Exception Clearance & Payment Gate",
+        "title_zh": "企业非标应付账款异常三单匹配与付款门禁",
+        "subtitle": "22 ERP, Procurement & Tax Invariants • 4,194,304 State Combinations",
+        "natural_language_rules": (
+            "1. [PO Validation] Invoice must map to an active Purchase Order (PO) line or authorized pending change order.\n"
+            "2. [Delivery & QA] Delivery fulfillment requires Goods Received Note (GRN) warehouse sign-off, QA inspection certificate, or exact unit quantity match.\n"
+            "3. [Vendor Master & AML] Vendor TIN/Tax ID, remittance bank routing, and sanctions list must be verified in master entity registry.\n"
+            "4. [Price Discrepancy & Hallucination Trap] If invoiced unit price exceeds PO contracted rate by > 5%, AP agent MUST NOT auto-clear or bypass 2-way match holds without Procurement Director physical counter-signature or formal vendor credit memo.\n"
+            "5. [HARD COMPLIANCE INVARIANT] Zero treasury wire disbursement shall be authorized if price variance > 5% lacks dual human director authorization."
+        ),
+        "variables": [
+            {"name": "po_line_active", "label": "PO Line Open & Active", "prior": 0.90, "category": "Purchase Order"},
+            {"name": "po_change_order_pending", "label": "PO Change Order Pending", "prior": 0.35, "category": "Purchase Order"},
+            {"name": "inv_billed_qty_matched", "label": "Billed Qty Matches PO (±0%)", "prior": 0.80, "category": "Invoice Verification"},
+            {"name": "grn_qty_confirmed", "label": "GRN Warehouse Receipt Confirmed", "prior": 0.75, "category": "Warehouse GRN"},
+            {"name": "inspection_qa_passed", "label": "QA Inspection Certificate Passed", "prior": 0.60, "category": "Warehouse GRN"},
+            {"name": "vendor_active_in_master", "label": "Vendor Active in Master Entity Table", "prior": 0.98, "category": "Vendor Master"},
+            {"name": "vendor_tax_id_validated", "label": "Vendor Tax ID / TIN Validated", "prior": 0.95, "category": "Vendor Master"},
+            {"name": "vendor_bank_account_verified", "label": "Vendor Remittance Bank Matches ERP", "prior": 0.95, "category": "Payment Security"},
+            {"name": "currency_usd_settled", "label": "Contract Currency Matches Billed (USD)", "prior": 0.90, "category": "Contract Terms"},
+            {"name": "contract_payment_terms_net30", "label": "Payment Terms NET-30 Standard", "prior": 0.85, "category": "Contract Terms"},
+            {"name": "inv_unit_price_exceeds_5pct", "label": "Invoiced Unit Price > PO Baseline +5%", "prior": 0.25, "category": "Discrepancy Exception"},
+            {"name": "procurement_director_signed", "label": "Procurement Director Signed Approval", "prior": 0.15, "category": "Authorization Gate"},
+            {"name": "supplier_credit_memo_issued", "label": "Supplier Issued Formal Credit Memo", "prior": 0.20, "category": "Reconciliation"},
+            {"name": "early_payment_discount_claimed", "label": "2% 10-NET-30 Early Discount Claimed", "prior": 0.40, "category": "Treasury Optimization"},
+            {"name": "llm_agent_auto_approve_flag", "label": "AI AP Agent Auto-Approved Clearance", "prior": 0.80, "category": "Agent Routing"},
+            {"name": "invoice_total_over_100k", "label": "Invoice Total >= $100,000 High-Value", "prior": 0.30, "category": "Treasury Threshold"},
+            {"name": "erp_two_way_match_bypass", "label": "2-Way Match Bypass Override Active", "prior": 0.50, "category": "ERP Workflow"},
+            {"name": "duplicate_invoice_num_cleared", "label": "Zero Duplicate Invoice Hash in 90 Days", "prior": 0.99, "category": "Fraud Prevention"},
+            {"name": "sanction_list_screened", "label": "OFAC / AML Sanctions Screen Cleared", "prior": 0.99, "category": "Compliance Screening"},
+            {"name": "freight_accessorial_authorized", "label": "Accessorial / Fuel Surcharge Authorized", "prior": 0.70, "category": "Logistics Audit"},
+            {"name": "wire_batch_released", "label": "Treasury ACH/Wire Batch Released", "prior": 0.70, "category": "Disbursement"},
+            {"name": "foreign_exchange_hedged", "label": "FX Forward Contract Hedged", "prior": 0.50, "category": "Treasury Optimization"},
+        ],
+        # Component 1: [1, 2] -> 3 ways
+        # Component 2: [3, 4, 5] -> 7 ways
+        # Component 3: [21, 22] -> 3 ways
+        # Fixed chain: 6..20 -> 1 way
+        # Total #F = 3 * 7 * 3 = 63 exact loophole paths!
+        "clauses": [
+            [1, 2],
+            [3, 4, 5],
+            [6],
+            [7],
+            [8],
+            [9],
+            [10],
+            [11],
+            [-12],
+            [-13],
+            [14],
+            [-11, 15],
+            [16],
+            [-15, 17],
+            [18],
+            [19],
+            [20],
+            [21, 22],
+        ],
+        "clause_descriptions": [
+            "C1: Invoice corresponds to active PO line or authorized change order (po_line_active ∨ po_change_order_pending)",
+            "C2: Delivery confirmed via billed qty match, warehouse GRN, or QA certificate (inv_billed_qty_matched ∨ grn_qty_confirmed ∨ inspection_qa_passed)",
+            "C3: Vendor entity active in master vendor registry (vendor_active_in_master = True)",
+            "C4: Vendor Tax Identification Number (TIN/EIN) validated against IRS/VIES (vendor_tax_id_validated = True)",
+            "C5: Remittance bank routing verified against ERP vendor master profile (vendor_bank_account_verified = True)",
+            "C6: Invoiced currency matches contract PO denomination USD (currency_usd_settled = True)",
+            "C7: Payment terms conform to standard contractual NET-30 schedule (contract_payment_terms_net30 = True)",
+            "C8: Invoiced unit price exceeds PO contracted rate by +5% discrepancy (inv_unit_price_exceeds_5pct = True)",
+            "C9: Procurement Director has NOT provided written override approval (¬procurement_director_signed)",
+            "C10: Supplier has NOT issued formal credit memo for price differential (¬supplier_credit_memo_issued)",
+            "C11: Treasury early payment discount capture scheduled (early_payment_discount_claimed = True)",
+            "C12: LLM AP Agent hallucinated approval based on supplier email context (¬inv_unit_price_exceeds_5pct ∨ llm_agent_auto_approve_flag)",
+            "C13: Invoice amount exceeds $100k high-value executive threshold (invoice_total_over_100k = True)",
+            "C14: Agent auto-approval triggers ERP 2-way match exception bypass (¬llm_agent_auto_approve_flag ∨ erp_two_way_match_bypass)",
+            "C15: Deduplication check cleared: zero duplicate invoice hash within 90 days (duplicate_invoice_num_cleared = True)",
+            "C16: Real-time OFAC / AML global anti-money laundering screening passed (sanction_list_screened = True)",
+            "C17: Logistics accessorial and fuel surcharge authorized per contract addendum (freight_accessorial_authorized = True)",
+            "C18: High-value disbursement queued for ACH/Wire batch release or FX forward execution (wire_batch_released ∨ foreign_exchange_hedged)",
+        ],
+        "patch_clauses": [
+            [-11, 12, 13],
+            [-15, -17, 12],
+        ],
+        "patch_descriptions": [
+            "PATCH-1 [Hard Price Variance Gate]: ¬inv_unit_price_exceeds_5pct ∨ procurement_director_signed ∨ supplier_credit_memo_issued",
+            "PATCH-2 [Agent Autonomous Hold]: ¬llm_agent_auto_approve_flag ∨ ¬erp_two_way_match_bypass ∨ procurement_director_signed",
+        ],
+        "baseline_count": 0,
+        "ghost_path_summary": {
+            "headline": "PO #1042 Non-Standard Invoice Unit Price +$15 (+7.5%) Auto-Approved by AI Agent without Director Signature",
+            "financial_impact": "$142,500 Wire Batch queued for irreversible release. 63 distinct fulfillment combinations bypass ERP 2-way match hold because LLM mistook informal email exchange ('we agree on freight adjustments') for contract price modification.",
+            "root_cause_clause": "Clause C8, C9, C10 & C12: Invoiced price variance exceeds +5% tolerance without Director signature or supplier credit memo, yet LLM auto-cleared the discrepancy hold.",
+            "patched_rule_text": (
+                "PATCHED SMT INVARIANT: (1) Enforce SMT Gate: `require(inv_unit_price_exceeds_5pct == False or procurement_director_signed == True or supplier_credit_memo_issued == True)`. "
+                "(2) Automatically generate SHA-256 signed Audit Clearance Certificate upon satisfaction."
+            ),
+        },
+    },
 }
 
 
@@ -435,7 +537,7 @@ def evaluate_scenario(
     )
     engine.ingest_event(
         payload=event_summary,
-        domain_tag=1 if scenario_id == "ecommerce_promo" else (2 if scenario_id == "agent_workflow" else 3),
+        domain_tag=1 if scenario_id == "ecommerce_promo" else (2 if scenario_id == "agent_workflow" else (4 if scenario_id == "ap_invoice_matching" else 3)),
         loophole_count=current_res["exact_count"],
         importance=0.95 if current_res["exact_count"] > 0 else 0.70,
         provenance=0.95,

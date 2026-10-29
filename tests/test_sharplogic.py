@@ -88,6 +88,22 @@ class TestSharpLogicEndToEnd(unittest.TestCase):
         self.assertEqual(patched["audit"]["exact_count"], 0)
         self.assertEqual(patched["audit"]["sharp_score"], 100.0)
 
+    def test_03b_flagship_ap_invoice_matching_clearance_gate(self) -> None:
+        """Verifies exact #F=63 loophole paths across 4,194,304 states and UNSAT proof on patch."""
+        unpatched = evaluate_scenario("ap_invoice_matching", apply_patch=False)
+        audit = unpatched["audit"]
+        self.assertEqual(audit["num_vars"], 22)
+        self.assertEqual(audit["total_space"], 4_194_304)
+        self.assertEqual(audit["exact_count"], 63)
+        self.assertTrue(audit["is_satisfiable"])
+        self.assertEqual(len(unpatched["variables"]), 22)
+        self.assertEqual(len(unpatched["clauses"]), 18)
+
+        patched = evaluate_scenario("ap_invoice_matching", apply_patch=True)
+        self.assertEqual(patched["audit"]["exact_count"], 0)
+        self.assertEqual(patched["audit"]["sharp_score"], 100.0)
+        self.assertFalse(patched["audit"]["is_satisfiable"])
+
     def test_04_bit_exact_parity_rust_cdylib_vs_vercel_serverless_kernel(self) -> None:
         """Guarantees 100% bit-exact parity between Native Rust cdylib and Vercel Serverless Kernel."""
         self.assertTrue(self.engine.using_native_rust)

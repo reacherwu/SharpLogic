@@ -747,9 +747,16 @@
       font-weight: 700;
       border-radius: 4px;
       cursor: pointer;
+      transition: all 0.15s ease;
     }
 
     .domain-btn:hover {
+      border-color: var(--terminal-green);
+    }
+
+    .domain-btn.active {
+      background: var(--terminal-green);
+      color: #000;
       border-color: var(--terminal-green);
     }
 
@@ -1302,10 +1309,11 @@ curl -fsSL https://sharplogic.vercel.app/install.py | python3 - --token sl_user_
 
         <!-- Terminal Actions -->
         <div class="terminal-footer-actions">
-          <div style="display: flex; gap: 8px;">
-            <button class="domain-btn" onclick="switchDomain('agent_workflow')">AI Agent (Active)</button>
-            <button class="domain-btn" onclick="switchDomain('ecommerce_promo')">E-Commerce (#F=42)</button>
-            <button class="domain-btn" onclick="switchDomain('cloud_iam')">AWS IAM (120x Blast)</button>
+          <div style="display: flex; gap: 8px; flex-wrap: wrap;">
+            <button class="domain-btn active" id="btn-domain-ap_invoice_matching" onclick="switchDomain('ap_invoice_matching')">★ AP 3-Way Match (#F=63)</button>
+            <button class="domain-btn" id="btn-domain-agent_workflow" onclick="switchDomain('agent_workflow')">AI Agent (Deadlock)</button>
+            <button class="domain-btn" id="btn-domain-ecommerce_promo" onclick="switchDomain('ecommerce_promo')">E-Commerce (#F=42)</button>
+            <button class="domain-btn" id="btn-domain-cloud_iam" onclick="switchDomain('cloud_iam')">AWS IAM (120x Blast)</button>
           </div>
 
           <div style="display: flex; gap: 12px;">
@@ -1431,7 +1439,7 @@ curl -fsSL https://sharplogic.vercel.app/install.py | python3 - --token sl_user_
   </footer>
 
   <script>
-    let activeScenario = 'agent_workflow';
+    let activeScenario = 'ap_invoice_matching';
     let isPatched = false;
     let currentUser = null;
 
@@ -1689,25 +1697,100 @@ curl -fsSL https://sharplogic.vercel.app/install.py | python3 - --token sl_user_
       const btnPatch = document.getElementById('btn-patch');
       const solveTime = document.getElementById('solve-time-tag');
 
+      // Highlight active domain button
+      document.querySelectorAll('.domain-btn').forEach(b => b.classList.remove('active'));
+      const activeBtn = document.getElementById(`btn-domain-${data.scenario_id}`);
+      if (activeBtn) activeBtn.classList.add('active');
+
       solveTime.textContent = `SOLVE TIME: ${audit.solve_time_us} µs`;
+
+      // Update topology nodes dynamically per domain
+      const node1 = document.getElementById('node-goal');
+      const node2 = document.getElementById('node-planner');
+      const node3 = document.getElementById('node-tool');
+      const node4 = document.getElementById('node-critic');
+      const node5 = document.getElementById('node-gate');
+
+      if (data.scenario_id === 'ap_invoice_matching') {
+        node1.querySelector('.node-name').textContent = 'PO Baseline';
+        node1.querySelector('.node-sub').textContent = 'Contracted $500';
+        node2.querySelector('.node-name').textContent = 'Warehouse GRN';
+        node2.querySelector('.node-sub').textContent = 'Receipt Confirmed';
+        node3.querySelector('.node-name').textContent = 'Invoice (+7.5%)';
+        node3.querySelector('.node-sub').textContent = 'Price Discrepancy';
+        node4.querySelector('.node-name').textContent = 'AP SMT Gate';
+        node4.querySelector('.node-sub').textContent = isLoophole ? 'LLM Hallucination' : 'Director Signed';
+        node5.querySelector('.node-name').textContent = 'Treasury Wire';
+        node5.querySelector('.node-sub').textContent = isLoophole ? 'Unauthorized $142k' : 'SHA-256 Signed';
+      } else if (data.scenario_id === 'ecommerce_promo') {
+        node1.querySelector('.node-name').textContent = 'VIP Member';
+        node1.querySelector('.node-sub').textContent = '20% Off Tier';
+        node2.querySelector('.node-name').textContent = 'Cart Bundle';
+        node2.querySelector('.node-sub').textContent = 'Beauty >= ¥500';
+        node3.querySelector('.node-name').textContent = 'Voucher Stack';
+        node3.querySelector('.node-sub').textContent = '¥100 No-Threshold';
+        node4.querySelector('.node-name').textContent = 'Partial Return';
+        node4.querySelector('.node-sub').textContent = isLoophole ? 'Asymmetric Retain' : 'Pro-Rata Clawback';
+        node5.querySelector('.node-name').textContent = 'Refund Payout';
+        node5.querySelector('.node-sub').textContent = isLoophole ? '135% Cost Floor Loss' : 'Safe Margin Cap';
+      } else if (data.scenario_id === 'cloud_iam') {
+        node1.querySelector('.node-name').textContent = 'CI Principal';
+        node1.querySelector('.node-sub').textContent = 'ci-staging-runner';
+        node2.querySelector('.node-name').textContent = 'sts:AssumeRole';
+        node2.querySelector('.node-sub').textContent = 'db-migration-*';
+        node3.querySelector('.node-name').textContent = 'Wildcard Action';
+        node3.querySelector('.node-sub').textContent = 'rds:CopyDBSnapshot';
+        node4.querySelector('.node-name').textContent = 'Ingress Rule';
+        node4.querySelector('.node-sub').textContent = isLoophole ? '0.0.0.0/0 Any IP' : 'VPC Endpoint Pin';
+        node5.querySelector('.node-name').textContent = 'Exfil Bucket';
+        node5.querySelector('.node-sub').textContent = isLoophole ? '120x Blast Radius' : 'Access Blocked';
+      } else {
+        node1.querySelector('.node-name').textContent = 'User Goal';
+        node1.querySelector('.node-sub').textContent = 'Entrypoint';
+        node2.querySelector('.node-name').textContent = 'Planner Agent';
+        node2.querySelector('.node-sub').textContent = 'Decomposition';
+        node3.querySelector('.node-name').textContent = 'Tool Executor';
+        node3.querySelector('.node-sub').textContent = 'API Invocation';
+        node4.querySelector('.node-name').textContent = 'Critic Fallback';
+        node4.querySelector('.node-sub').textContent = isLoophole ? 'Deadlock Trap' : 'Clean Loop-Breaker';
+        node5.querySelector('.node-name').textContent = 'Human Gate';
+        node5.querySelector('.node-sub').textContent = isLoophole ? 'Never Reached' : 'Verified Gate';
+      }
 
       if (isLoophole) {
         fCount.textContent = audit.exact_count.toLocaleString();
         fCount.className = 'huge-count danger';
-        fExpl.textContent = `${audit.exact_count} out of ${audit.total_space.toLocaleString()} trajectories violate safety invariants.`;
+        fExpl.textContent = `${audit.exact_count.toLocaleString()} out of ${audit.total_space.toLocaleString()} trajectories violate safety invariants.`;
         
         badge.className = 'terminal-badge danger';
-        badge.textContent = `🚨 ${audit.exact_count} CYCLIC DEADLOCKS DETECTED`;
+        badge.textContent = `🚨 ${audit.exact_count.toLocaleString()} LOOPHOLE TRAJECTORIES DETECTED`;
 
         nodeTool.className = 'node-box danger';
         nodeCritic.className = 'node-box danger';
         deadlockTag.className = 'deadlock-tag danger';
-        deadlockTag.textContent = '[!] DEADLOCK CYCLE: Tool ⇄ Critic';
 
-        ghostTrace.innerHTML = `
-          [context_ambiguity=1] ∧ [tool_timeout=1] ∧ [retry_count>3]<br />
-          <span style="color: #ff7b72; font-weight: 700;">⇒ Agent enters a retry loop whose exit is disabled under these conditions.</span>
-        `;
+        if (data.scenario_id === 'ap_invoice_matching') {
+          deadlockTag.textContent = '[!] AP EXCEPTION BREACH: +7.5% Variance Auto-Cleared';
+        } else if (data.scenario_id === 'ecommerce_promo') {
+          deadlockTag.textContent = '[!] COST FLOOR BREACH: 135% Refund Payout';
+        } else if (data.scenario_id === 'cloud_iam') {
+          deadlockTag.textContent = '[!] 120x BLAST RADIUS: Wildcard IAM Escalation';
+        } else {
+          deadlockTag.textContent = '[!] DEADLOCK CYCLE: Tool ⇄ Critic';
+        }
+
+        if (data.ghost_path_summary) {
+          ghostTrace.innerHTML = `
+            <strong style="color: #f0f6fc;">${data.ghost_path_summary.headline}</strong><br />
+            <span style="color: #8b949e; font-size: 11px;">Impact: ${data.ghost_path_summary.financial_impact}</span><br />
+            <span style="color: #ff7b72; font-weight: 700;">⇒ ${data.ghost_path_summary.root_cause_clause}</span>
+          `;
+        } else {
+          ghostTrace.innerHTML = `
+            [context_ambiguity=1] ∧ [tool_timeout=1] ∧ [retry_count>3]<br />
+            <span style="color: #ff7b72; font-weight: 700;">⇒ Agent enters a retry loop whose exit is disabled under these conditions.</span>
+          `;
+        }
 
         btnReset.style.display = 'none';
         btnPatch.style.display = 'inline-flex';
@@ -1717,17 +1800,34 @@ curl -fsSL https://sharplogic.vercel.app/install.py | python3 - --token sl_user_
         fExpl.textContent = `All ${audit.total_space.toLocaleString()} trajectories mathematically proven safe (UNSAT Core Verified).`;
 
         badge.className = 'terminal-badge safe';
-        badge.textContent = '✓ ZERO DEADLOCKS (FORMAL PROOF)';
+        badge.textContent = '✓ ZERO LOOPHOLES (FORMAL PROOF OF COMPLIANCE)';
 
         nodeTool.className = 'node-box safe';
         nodeCritic.className = 'node-box safe';
         deadlockTag.className = 'deadlock-tag safe';
-        deadlockTag.textContent = '✓ GUARDRAIL VERIFIED: 0 DEADLOCKS';
 
-        ghostTrace.innerHTML = `
-          [PATCH C21: Invariant Loop-Breaker Active]<br />
-          <span style="color: #7ee787; font-weight: 700;">✓ Formally proven: No infinite loops possible across all 1,048,576 execution states.</span>
-        `;
+        if (data.scenario_id === 'ap_invoice_matching') {
+          deadlockTag.textContent = '✓ SMT PAYMENT GATE: ZERO UNCHECKED DISBURSEMENTS';
+        } else if (data.scenario_id === 'ecommerce_promo') {
+          deadlockTag.textContent = '✓ MARGIN INVARIANT: 100% SAFE PAYOUT';
+        } else if (data.scenario_id === 'cloud_iam') {
+          deadlockTag.textContent = '✓ POLICY PINNED: ZERO UNGUARDED ROLES';
+        } else {
+          deadlockTag.textContent = '✓ GUARDRAIL VERIFIED: 0 DEADLOCKS';
+        }
+
+        if (data.ghost_path_summary && data.ghost_path_summary.patched_rule_text) {
+          ghostTrace.innerHTML = `
+            <strong style="color: #7ee787;">[CRYPTOGRAPHIC SMT CLEARANCE CERTIFICATE GENERATED]</strong><br />
+            <span style="color: #8b949e; font-size: 11px;">${data.ghost_path_summary.patched_rule_text}</span><br />
+            <span style="color: #7ee787; font-weight: 700;">✓ Formally proven: 0 satisfying loophole states across all ${audit.total_space.toLocaleString()} states (UNSAT Core Verified).</span>
+          `;
+        } else {
+          ghostTrace.innerHTML = `
+            [PATCH C21: Invariant Loop-Breaker Active]<br />
+            <span style="color: #7ee787; font-weight: 700;">✓ Formally proven: No infinite loops possible across all ${audit.total_space.toLocaleString()} execution states.</span>
+          `;
+        }
 
         btnReset.style.display = 'inline-flex';
         btnPatch.style.display = 'none';
@@ -1736,6 +1836,9 @@ curl -fsSL https://sharplogic.vercel.app/install.py | python3 - --token sl_user_
 
     async function switchDomain(domainId) {
       activeScenario = domainId;
+      document.querySelectorAll('.domain-btn').forEach(b => b.classList.remove('active'));
+      const activeBtn = document.getElementById(`btn-domain-${domainId}`);
+      if (activeBtn) activeBtn.classList.add('active');
       await runAudit(false);
     }
 
