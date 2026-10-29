@@ -160,6 +160,33 @@ class TestGraphAuditEndpoint(unittest.TestCase):
         status, res = audit({"nodes": nodes, "terminals": ["END"], "edges": edges})
         self.assertEqual(status, 400)
         self.assertIn("16", res["error"])
+        # The 400 copy must not promise an estimate the fallback
+        # never computes.
+        self.assertNotIn("sampled", res["error"])
+
+    def test_oversized_fallback_is_structural_only(self):
+        # Opt-in fallback for oversized graphs returns structural
+        # findings only: no exact count and no sampled estimate.
+        nodes = ["start", "router", "END"]
+        edges = [{"from": "start", "to": "router", "condition": ""}]
+        for i in range(17):
+            t = f"tool_{i}"
+            nodes.append(t)
+            edges.append({"from": "router", "to": t, "condition": f"use_tool_{i}"})
+            edges.append({"from": t, "to": "END", "condition": ""})
+        ip = f"10.7.2.{next(_IP_COUNTER)}"
+        status, res = dispatch_api_request(
+            "POST", "/api/graph-audit",
+            body={"graph": {"nodes": nodes, "terminals": ["END"], "edges": edges},
+                  "fallback": True},
+            client_ip=ip,
+        )
+        self.assertEqual(status, 200)
+        self.assertTrue(res["ok"])
+        self.assertEqual(res["verdict"], "structural_fallback")
+        self.assertIsNone(res["trap_count"])
+        self.assertIsNone(res["estimated_trap_rate"])
+        self.assertNotIn("sampled", res["engine"])
 
 
 if __name__ == "__main__":

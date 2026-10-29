@@ -647,7 +647,9 @@ WORKFLOW = {
     "terminals": ["Human_Approval_Gate"],
     "edges": [
         {"from": "Tool_Executor", "to": "Critic_Fallback",
-         "condition": "tool_timeout or execution_error"},
+         "condition": ""},
+        {"from": "Tool_Executor", "to": "Human_Approval_Gate",
+         "condition": "not tool_timeout and not execution_error"},
         {"from": "Critic_Fallback", "to": "Tool_Executor",
          "condition": "retry_prompt_generated and retry_count <= 3"},
         {"from": "Critic_Fallback", "to": "Human_Approval_Gate",
@@ -786,29 +788,22 @@ guard.assert_safe("Critic_Fallback", "Tool_Executor",
             atoms = ga.get("condition_variables") or []
             fallback = bool(body.get("fallback", False))
             if len(atoms) > 16 and not fallback:
-                # Loud limit by default; opt-in sampling fallback for
-                # oversized graphs (productized "tiered audit").
+                # Loud limit by default; opt-in structural-only fallback
+                # for oversized graphs (productized "tiered audit").
                 return 400, {
                     "ok": False,
                     "error": (
                         f"Graph uses {len(atoms)} distinct condition atoms; the browser trial "
-                        "supports at most 16 exactly. Re-send with {\"fallback\": true} for a "
-                        "sampled estimate, or install the full package for exact CNF counting: "
+                        "supports at most 16 exactly. Re-send with {\"fallback\": true} for "
+                        "structural analysis only (no exact count or estimate is computed), "
+                        "or install the full package for exact CNF counting: "
                         "curl -fsSL https://sharplogic.vercel.app/install.py | python3 -"
                     ),
                 }
             if len(atoms) > 16 and fallback:
-                import random
-                random.seed(42)
-                n_samples = 2000
-                trap_hits = 0
-                # Use standalone checker semantics via audit_graph if available.
-                try:
-                    import importlib.util
-                    spec = importlib.util.spec_from_file_location("ig", os.path.join(ROOT_DIR, "install.py"))
-                except Exception:
-                    spec = None
-                # Fallback: report structural findings only, no exact count.
+                # Structural-only fallback: findings from the compiler's
+                # structural layer.  No exact count and no sampled
+                # estimate exists in this mode - trap_count stays null.
                 return 200, {
                     "ok": True,
                     "trap_count": None,
@@ -818,8 +813,8 @@ guard.assert_safe("Critic_Fallback", "Tool_Executor",
                     "structural_issues": ga.get("findings", []),
                     "witnesses": [],
                     "solve_time_us": res["audit"].get("solve_time_us"),
-                    "engine": "sharplogic-core (sampled fallback): exact counting unavailable beyond 16 atoms; install the full package for exact CNF counts.",
-                    "verdict": "sampled_fallback",
+                    "engine": "sharplogic-core (structural fallback): exact counting unavailable beyond 16 atoms; install the full package for exact CNF counts.",
+                    "verdict": "structural_fallback",
                     "note": "Oversized graph: returning structural analysis only. Use the full package for exact counts.",
                 }
             audit = res["audit"]
