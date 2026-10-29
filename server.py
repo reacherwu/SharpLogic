@@ -702,6 +702,15 @@ def _send_report_email(to_email: str, subject: str, text_body: str, html_body: s
         headers={
             "Authorization": f"Bearer {api_key}",
             "Content-Type": "application/json",
+            "Accept": "application/json",
+            # Resend sits behind Cloudflare, which rejects the default
+            # Python-urllib signature (HTTP 403, error code 1010) - a
+            # browser UA is required (same lesson as the project's other
+            # Resend senders).
+            "User-Agent": (
+                "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 "
+                "(KHTML, like Gecko) Chrome/126.0 Safari/537.36"
+            ),
         },
         method="POST",
     )

@@ -251,6 +251,49 @@ class TestReportEndpoint(unittest.TestCase):
         self.assertEqual(load_leads(), [])
 
 
+class TestSendReportEmailTransport(unittest.TestCase):
+    def test_resend_request_carries_browser_user_agent_and_parses_id(self):
+        # Regression pin for the first live attempt: Resend is behind
+        # Cloudflare, which rejects the default Python-urllib signature
+        # with HTTP 403 / error code 1010. The request must carry a
+        # browser User-Agent, and the accepted message id must be parsed
+        # from the JSON response.
+        captured = {}
+
+        class _Resp:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *exc):
+                return False
+
+            def read(self):
+                return b'{"id": "msg-live-42"}'
+
+        def fake_urlopen(req, timeout=None):
+            captured["req"] = req
+            captured["timeout"] = timeout
+            return _Resp()
+
+        with mock.patch.dict(
+            os.environ, {server._RESEND_KEY_ENV_NAME: "test-key-not-real"}
+        ), mock.patch.object(server.urllib.request, "urlopen", fake_urlopen):
+            message_id, error = server._send_report_email(
+                "dev@example.com", "subj", "text body", "<p>html body</p>"
+            )
+        self.assertIsNone(error)
+        self.assertEqual(message_id, "msg-live-42")
+        req = captured["req"]
+        self.assertIn("Mozilla/5.0", req.get_header("User-agent"))
+        self.assertEqual(req.full_url, "https://api.resend.com/emails")
+        body = json.loads(req.data.decode("utf-8"))
+        self.assertEqual(body["from"], "SharpLogic <hello@mail.quotalis.app>")
+        self.assertEqual(body["to"], ["dev@example.com"])
+        self.assertEqual(body["subject"], "subj")
+        self.assertEqual(body["text"], "text body")
+        self.assertEqual(body["html"], "<p>html body</p>")
+
+
 class TestLeadStorageDatabaseGuard(unittest.TestCase):
     def test_append_lead_db_outage_raises_and_never_falls_back_to_file(self):
         tmp = tempfile.TemporaryDirectory()
