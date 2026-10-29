@@ -760,6 +760,98 @@
       border-color: var(--terminal-green);
     }
 
+    /* Reality Gap & Dual-Engine Pipeline */
+    .pipeline-section {
+      background: var(--bg-white);
+      border: 2px solid var(--border-hard);
+      border-radius: 8px;
+      box-shadow: var(--shadow-hard-lg);
+      padding: 32px 28px;
+      margin-bottom: 48px;
+    }
+
+    .pipeline-grid {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 24px;
+      margin-top: 24px;
+    }
+
+    @media (max-width: 850px) {
+      .pipeline-grid {
+        grid-template-columns: 1fr;
+      }
+    }
+
+    .pipeline-step-card {
+      background: #f6f8fa;
+      border: 2px solid var(--border-hard);
+      border-radius: 6px;
+      padding: 20px;
+      box-shadow: 3px 3px 0 #000;
+    }
+
+    .pipeline-step-card.guard {
+      background: #0d1117;
+      color: #e6edf3;
+      border-color: var(--terminal-green);
+      box-shadow: 3px 3px 0 var(--terminal-green);
+    }
+
+    /* Scenarios Showcase Grid */
+    .scenario-grid {
+      display: grid;
+      grid-template-columns: repeat(3, 1fr);
+      gap: 20px;
+      margin-bottom: 48px;
+    }
+
+    @media (max-width: 900px) {
+      .scenario-grid {
+        grid-template-columns: 1fr;
+      }
+    }
+
+    .scenario-card {
+      background: var(--bg-white);
+      border: 2px solid var(--border-hard);
+      border-radius: 6px;
+      padding: 24px 20px;
+      box-shadow: var(--shadow-hard);
+      display: flex;
+      flex-direction: column;
+      justify-content: space-between;
+    }
+
+    .scenario-badge {
+      font-family: var(--font-mono);
+      font-size: 11px;
+      font-weight: 800;
+      padding: 4px 8px;
+      border-radius: 4px;
+      display: inline-block;
+      margin-bottom: 12px;
+      width: fit-content;
+    }
+
+    .scenario-badge.primary {
+      background: #dafbe1;
+      color: #1a7f37;
+      border: 1px solid #1a7f37;
+    }
+
+    .scenario-badge.secondary {
+      background: #ddf4ff;
+      color: #0969da;
+      border: 1px solid #0969da;
+    }
+
+    .scenario-badge.warning {
+      background: #fff8c5;
+      color: #9a6700;
+      border: 1px solid #9a6700;
+    }
+
     /* Why Bento Grid */
     .bento-grid {
       display: grid;
@@ -965,16 +1057,15 @@
     <section class="hero-section">
       <div class="cyber-tag">
         <span>● UNIVERSE // '26</span>
-        <span>:: SYSTEM TWO FORMAL VERIFICATION FOR AI AGENTS</span>
+        <span>:: ENTERPRISE INVARIANT & CLEARANCE GATE FOR AI AGENTS</span>
       </div>
 
       <h1 class="hero-title">
-        COUNT THE TRAPS IN YOUR <span class="highlight">AI AGENTS.</span><br />
-        EXACTLY.
+        NEVER LET PROBABILISTIC LLMs APPROVE <span class="highlight">IRREVERSIBLE ACTIONS.</span>
       </h1>
 
       <p class="hero-subtitle">
-        Multi-agent graphs hide retry loops with no exit, dead-end nodes, and approval paths nobody traced. SharpLogic compiles your workflow graph into a CNF formula and counts — exactly — the condition assignments that leave it stuck (#F). Sparse workflow graphs resolve in microseconds; dense formulas take longer (exact counting is exponential in the worst case, up to the 64-variable engine limit).
+        LLMs are great at reading messy invoices, vendor emails, and contract drafts &mdash; but enterprises cannot afford a 0.8% hallucination when paying six-figure wires, signing uncapped liabilities, or modifying cloud permissions. SharpLogic enforces zero-hallucination SMT invariants in microseconds. If <code>#F &gt; 0</code>, disbursement is physically blocked.
       </p>
 
       <!-- VIP Access Strip (Unregistered state) -->
@@ -1234,6 +1325,63 @@ curl -fsSL https://sharplogic.vercel.app/install.py | python3 - --token sl_user_
       }
     </script>
 
+    <!-- Downstream Irreversibility & Dual-Engine Architecture -->
+    <section class="pipeline-section">
+      <div style="display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 12px; border-bottom: 2px solid var(--border-hard); padding-bottom: 16px;">
+        <div>
+          <span style="font-family: var(--font-mono); font-size: 12px; font-weight: 800; color: #cf222e; background: #ffebe9; padding: 4px 8px; border: 1px solid #cf222e; border-radius: 4px;">
+            🚨 THE REALITY GAP: WHY ENTERPRISE AI DIES IN STAGING
+          </span>
+          <h2 style="font-size: 24px; font-weight: 900; margin: 10px 0 4px 0;">
+            "Something Downstream Becomes Irreversible &mdash; Any Probabilistic Model Gets Blocked."
+          </h2>
+          <p style="font-size: 14.5px; color: var(--text-muted); margin: 0; max-width: 850px;">
+            Enterprises don't lack cool LLM demos. They lack <strong>deterministic sign-off power</strong>. A 99.2% accurate LLM still causes catastrophe on the 0.8% edge cases: misrouting international supplier wires, accepting infinite liability clauses, or bypassing two-person approval.
+          </p>
+        </div>
+      </div>
+
+      <div class="pipeline-grid">
+        <!-- Step 1: LLM Extractor -->
+        <div class="pipeline-step-card">
+          <div style="font-family: var(--font-mono); font-size: 11.5px; font-weight: 800; color: #0969da; margin-bottom: 8px;">
+            LAYER 01 // UNSTRUCTURED REALITY
+          </div>
+          <h3 style="font-size: 17px; font-weight: 800; margin-bottom: 8px;">
+            Probabilistic LLM Fact Extractor
+          </h3>
+          <p style="font-size: 13.5px; color: var(--text-muted); line-height: 1.6; margin-bottom: 12px;">
+            <strong>What LLMs are great at:</strong> parsing chaotic PDF scans, handwritten warehouse delivery slips, Slack approvals, and complex vendor email threads into formal fact tuples.
+          </p>
+          <div style="background: #ffffff; border: 1px solid #d0d7de; border-radius: 4px; padding: 10px; font-family: var(--font-mono); font-size: 12px; color: #24292f;">
+            <strong>Extracted Fact Tuples:</strong><br/>
+            &bull; PO Number: #1042<br/>
+            &bull; Invoiced Price: $540.00 (+7.5% vs PO Baseline $500)<br/>
+            &bull; Email Note: "Agreed on freight adjustment with supplier"
+          </div>
+        </div>
+
+        <!-- Step 2: SharpLogic SMT Gate -->
+        <div class="pipeline-step-card guard">
+          <div style="font-family: var(--font-mono); font-size: 11.5px; font-weight: 800; color: var(--terminal-green); margin-bottom: 8px;">
+            LAYER 02 // DETERMINISTIC INVARIANT GATE
+          </div>
+          <h3 style="font-size: 17px; font-weight: 800; margin-bottom: 8px; color: #f0f6fc;">
+            SharpLogic SMT Symbolic Invariant Gate
+          </h3>
+          <p style="font-size: 13.5px; color: #8b949e; line-height: 1.6; margin-bottom: 12px;">
+            <strong>Zero Hallucination:</strong> Evaluates 22+ boolean/linear invariants in &lt; 10 &micro;s against master vendor contracts, bank routing records, and dual-authorization matrices.
+          </p>
+          <div style="background: #161b22; border: 1px solid #30363d; border-radius: 4px; padding: 10px; font-family: var(--font-mono); font-size: 12px; color: #7ee787;">
+            <strong>Deterministic Gate Verdict:</strong><br/>
+            &bull; Invoiced &gt; PO +5% Ceiling? <strong>TRUE</strong><br/>
+            &bull; Procurement Director Physical Signed? <strong>FALSE</strong><br/>
+            <span style="color: #ff7b72; font-weight: 700;">&rArr; #F = 63 Loophole States: DISBURSEMENT PHYSICALLY BLOCKED.</span>
+          </div>
+        </div>
+      </div>
+    </section>
+
     <!-- The Centerpiece: Cyber-Terminal Interactive Canvas -->
 
     <section class="terminal-window" id="canvas">
@@ -1242,7 +1390,7 @@ curl -fsSL https://sharplogic.vercel.app/install.py | python3 - --token sl_user_
           <span class="dot red"></span>
           <span class="dot yellow"></span>
           <span class="dot green"></span>
-          <span class="terminal-title" style="margin-left: 8px;">langgraph_workflow_verifier.rs</span>
+          <span class="terminal-title" style="margin-left: 8px;">sharplogic_enterprise_clearance_gate.rs</span>
         </div>
         <div class="terminal-badge danger" id="term-badge">
           🚨 192 CYCLIC DEADLOCKS DETECTED
@@ -1323,6 +1471,80 @@ curl -fsSL https://sharplogic.vercel.app/install.py | python3 - --token sl_user_
             <button class="btn-brutal green" id="btn-patch" onclick="runAudit(true)">
               ⚡ SYNTHESIZE 1-CLICK FORMAL GUARDRAIL (#F → 0)
             </button>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- High-Ticket Enterprise Scenarios -->
+    <section style="margin-bottom: 60px;">
+      <div style="margin-bottom: 24px;">
+        <span style="font-family: var(--font-mono); font-size: 12px; font-weight: 800; color: #0969da; background: #ddf4ff; padding: 4px 8px; border: 1px solid #0969da; border-radius: 4px;">
+          ENTERPRISE MISSION-CRITICAL PLAYBOOKS
+        </span>
+        <h2 style="font-size: 26px; font-weight: 900; margin: 10px 0 6px 0;">
+          The 3 High-Ticket Scenarios Where LLMs Dare Not Move Money Alone
+        </h2>
+        <p style="font-size: 15px; color: var(--text-muted); margin: 0;">
+          Validated with procurement, accounting, legal ops, and sysadmins across US, Canada, and global enterprises.
+        </p>
+      </div>
+
+      <div class="scenario-grid">
+        <!-- Card 1 -->
+        <div class="scenario-card">
+          <div>
+            <span class="scenario-badge primary">SCENARIO 01 // LIVE IN TERMINAL ABOVE</span>
+            <h3 style="font-size: 18px; font-weight: 800; margin: 0 0 10px 0;">AP 3-Way Match Exception Clearance</h3>
+            <p style="font-size: 13.5px; color: var(--text-muted); line-height: 1.6; margin-bottom: 14px;">
+              <strong>The Pain:</strong> 15%~25% of enterprise invoices deviate from Purchase Orders (unit price drift, unapproved freight, partial receipts). LLMs hallucinate discounts from supplier emails, leading to catastrophic misrouted wire batches.
+            </p>
+            <ul style="font-family: var(--font-mono); font-size: 12px; color: #57606a; padding-left: 18px; margin: 0 0 16px 0; line-height: 1.6;">
+              <li>&bull; Bounded +5% price variance ceiling</li>
+              <li>&bull; Master vendor EIN & bank routing validation</li>
+              <li>&bull; Mandatory Procurement Director dual-sign gate</li>
+            </ul>
+          </div>
+          <div style="border-top: 1px solid #e1e4e8; padding-top: 12px; font-family: var(--font-mono); font-size: 12px; font-weight: 700; color: #1a7f37;">
+            ROI: $1,000 ~ $3,500/mo per AP Department
+          </div>
+        </div>
+
+        <!-- Card 2 -->
+        <div class="scenario-card">
+          <div>
+            <span class="scenario-badge secondary">SCENARIO 02 // LEGAL & SALES OPS</span>
+            <h3 style="font-size: 18px; font-weight: 800; margin: 0 0 10px 0;">Contract Deviation & Fallback Matrix Gate</h3>
+            <p style="font-size: 13.5px; color: var(--text-muted); line-height: 1.6; margin-bottom: 14px;">
+              <strong>The Pain:</strong> Enterprise legal review takes 2 weeks, blocking sales closes. Generic AI tools say "the clause looks safe", but an ambiguous "may" vs "shall" triggers millions in uncapped indemnity liability.
+            </p>
+            <ul style="font-family: var(--font-mono); font-size: 12px; color: #57606a; padding-left: 18px; margin: 0 0 16px 0; line-height: 1.6;">
+              <li>&bull; Strict Fallback Matrix state machine</li>
+              <li>&bull; Zero-hallucination indemnity cap enforcement</li>
+              <li>&bull; 1-Click greenlight for pre-approved playbooks</li>
+            </ul>
+          </div>
+          <div style="border-top: 1px solid #e1e4e8; padding-top: 12px; font-family: var(--font-mono); font-size: 12px; font-weight: 700; color: #0969da;">
+            ROI: $20,000 ~ $40,000/yr Legal Budget Saved
+          </div>
+        </div>
+
+        <!-- Card 3 -->
+        <div class="scenario-card">
+          <div>
+            <span class="scenario-badge warning">SCENARIO 03 // CLOUD & SEC-OPS</span>
+            <h3 style="font-size: 18px; font-weight: 800; margin: 0 0 10px 0;">SOC 2 / ISO 27001 Audit Evidence Chain</h3>
+            <p style="font-size: 13.5px; color: var(--text-muted); line-height: 1.6; margin-bottom: 14px;">
+              <strong>The Pain:</strong> External Big 4 auditors reject black-box LLM compliance summaries. They demand deterministic, mathematically unforgeable access audit proofs with immutable timestamps before signing off.
+            </p>
+            <ul style="font-family: var(--font-mono); font-size: 12px; color: #57606a; padding-left: 18px; margin: 0 0 16px 0; line-height: 1.6;">
+              <li>&bull; Continuous IAM privilege blast radius check</li>
+              <li>&bull; Cryptographic SHA-256 state snapshot sealing</li>
+              <li>&bull; Physical block on unreviewed PR production merges</li>
+            </ul>
+          </div>
+          <div style="border-top: 1px solid #e1e4e8; padding-top: 12px; font-family: var(--font-mono); font-size: 12px; font-weight: 700; color: #9a6700;">
+            ROI: Non-Negotiable Compliance Survival Gate
           </div>
         </div>
       </div>
