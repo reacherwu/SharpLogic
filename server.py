@@ -202,7 +202,131 @@ def _db_mutate_doc(key: str, default, fn):
         conn.close()
 
 
+class StorageError(RuntimeError):
+    """A database-backed write could not be completed safely.
+
+    Raised instead of ever falling back to a default/file document on a
+    write path: on 2026-10-29 a transient Neon cold-start failure made
+    mutate_stats load an empty default doc and then persist it over the
+    real counters (visits 21 / audits 16 silently reset to ~0). Write
+    paths now fail loudly and write nothing.
+    """
+
+
+_DB_RETRY_DELAY_SECONDS = 0.5
+
+
+def _db_retry(fn, what: str):
+    """Run fn() (each attempt opens a fresh connection); on failure retry
+    once after a short pause - a suspended Neon free-tier compute may need
+    a moment to wake - then raise StorageError. Write paths only."""
+    try:
+        return fn()
+    except StorageError:
+        raise
+    except Exception:
+        time.sleep(_DB_RETRY_DELAY_SECONDS)
+        try:
+            return fn()
+        except Exception as exc:
+            raise StorageError(f"postgres {what} failed after retry: {exc}") from exc
+
+
+_STATS_COUNTERS = ("total_visits", "total_audits", "total_unlocked")
+
+
+def _merge_stats_monotonic(stored, incoming) -> dict:
+    """Merge an incoming stats doc over the stored doc so a save can never
+    regress stored data: counters keep the higher value per counter; dict
+    entries are unioned - stored identity fields win on conflict, while
+    numeric progress fields (invited_count, codes_used counts) keep the
+    higher value so legitimate increments are never lost either."""
+    if not isinstance(stored, dict):
+        return incoming
+    if not isinstance(incoming, dict):
+        return stored
+    merged = {**stored, **incoming}
+    for key in _STATS_COUNTERS:
+        try:
+            merged[key] = max(int(stored.get(key, 0) or 0), int(incoming.get(key, 0) or 0))
+        except (TypeError, ValueError):
+            merged[key] = stored.get(key, incoming.get(key, 0))
+    stored_users, incoming_users = stored.get("users"), incoming.get("users")
+    if isinstance(stored_users, dict) and isinstance(incoming_users, dict):
+        users = dict(incoming_users)
+        for token, s_user in stored_users.items():
+            if token not in users:
+                users[token] = s_user
+            elif isinstance(s_user, dict) and isinstance(users[token], dict):
+                u = {**users[token], **s_user}
+                try:
+                    u["invited_count"] = max(
+                        int(s_user.get("invited_count", 0) or 0),
+                        int(users[token].get("invited_count", 0) or 0),
+                    )
+                except (TypeError, ValueError):
+                    pass
+                users[token] = u
+        merged["users"] = users
+    stored_codes, incoming_codes = stored.get("codes_used"), incoming.get("codes_used")
+    if isinstance(stored_codes, dict) and isinstance(incoming_codes, dict):
+        codes = dict(stored_codes)
+        for code, count in incoming_codes.items():
+            try:
+                codes[code] = max(int(codes.get(code, 0) or 0), int(count or 0))
+            except (TypeError, ValueError):
+                codes.setdefault(code, count)
+        merged["codes_used"] = codes
+    stored_refs, incoming_refs = stored.get("referral_codes"), incoming.get("referral_codes")
+    if isinstance(stored_refs, dict) and isinstance(incoming_refs, dict):
+        merged["referral_codes"] = {**incoming_refs, **stored_refs}
+    return merged
+
+
+def _db_save_stats_doc(doc) -> None:
+    """Persist the stats doc under a row lock, merged monotonically against
+    the currently stored doc inside the same transaction, so no save -
+    however stale its in-memory copy - can lower a counter or drop a
+    stored user/code. Retried once, then StorageError (nothing written)."""
+
+    def _save():
+        conn = _db_connect()
+        try:
+            cur = conn.cursor()
+            cur.execute("SELECT doc FROM sharplogic_store WHERE key = %s FOR UPDATE", ("stats",))
+            row = cur.fetchone()
+            if row is None:
+                cur.execute(
+                    "INSERT INTO sharplogic_store (key, doc, updated_at) VALUES (%s, %s::jsonb, now()) "
+                    "ON CONFLICT (key) DO NOTHING",
+                    ("stats", json.dumps(doc)),
+                )
+            else:
+                stored = row[0] if isinstance(row[0], dict) else json.loads(row[0])
+                merged = _merge_stats_monotonic(stored, doc)
+                cur.execute(
+                    "UPDATE sharplogic_store SET doc = %s::jsonb, updated_at = now() WHERE key = %s",
+                    (json.dumps(merged), "stats"),
+                )
+            conn.commit()
+            cur.close()
+        except Exception:
+            try:
+                conn.rollback()
+            except Exception:
+                pass
+            raise
+        finally:
+            conn.close()
+
+    _db_retry(_save, "save stats")
+
+
 def load_stats() -> dict:
+    """Read-only load. Degrades gracefully (file, then defaults) so a DB
+    outage never breaks pure reads - but the result of a degraded read is
+    only ever served, never persisted: every write path below uses the
+    strict loaders instead."""
     if _database_url():
         try:
             data = _db_load_doc("stats", _default_stats())
@@ -219,13 +343,25 @@ def load_stats() -> dict:
     return _default_stats()
 
 
+def load_stats_for_write() -> dict:
+    """Load the stats doc for a read-modify-write path (registration).
+
+    In DB mode this NEVER falls back to a default/file document after a DB
+    error: the load is retried once and StorageError is raised, so a
+    transient outage surfaces as a 500 instead of letting a near-empty
+    doc be saved over the real one."""
+    if _database_url():
+        data = _db_retry(lambda: _db_load_doc("stats", _default_stats()), "load stats")
+        return {**_default_stats(), **data}
+    return load_stats()
+
+
 def save_stats(stats: dict) -> None:
     if _database_url():
-        try:
-            _db_save_doc("stats", stats)
-            return
-        except Exception:
-            pass  # fall through to file fallback
+        # Strict + monotonic-guarded (see _db_save_stats_doc): raises
+        # StorageError and writes nothing when the DB is unreachable.
+        _db_save_stats_doc(stats)
+        return
     try:
         with open(STATS_FILE, "w", encoding="utf-8") as f:
             json.dump(stats, f)
@@ -236,17 +372,25 @@ def save_stats(stats: dict) -> None:
 def mutate_stats(fn) -> dict:
     """Run fn(stats) as one atomic read-modify-write; returns final stats."""
     if _database_url():
-        try:
-            def _apply(doc):
-                merged = {**_default_stats(), **doc}
-                fn(merged)
-                doc.clear()
-                doc.update(merged)
+        def _apply(doc):
+            merged = {**_default_stats(), **doc}
+            before = {k: merged.get(k, 0) for k in _STATS_COUNTERS}
+            fn(merged)
+            # Monotonic guard: a mutation may never lower a counter,
+            # even if fn (or a future caller) tries to set one back.
+            for k in _STATS_COUNTERS:
+                try:
+                    if int(merged.get(k, 0) or 0) < int(before.get(k, 0) or 0):
+                        merged[k] = before[k]
+                except (TypeError, ValueError):
+                    merged[k] = before[k]
+            doc.clear()
+            doc.update(merged)
 
-            _, doc = _db_mutate_doc("stats", _default_stats(), _apply)
-            return {**_default_stats(), **doc}
-        except Exception:
-            pass  # fall through to file fallback
+        _, doc = _db_retry(
+            lambda: _db_mutate_doc("stats", _default_stats(), _apply), "mutate stats"
+        )
+        return {**_default_stats(), **doc}
     stats = load_stats()
     fn(stats)
     save_stats(stats)
@@ -255,14 +399,11 @@ def mutate_stats(fn) -> dict:
 
 def append_waitlist_entry(entry: dict) -> None:
     if _database_url():
-        try:
-            def _append(lst):
-                lst.append(entry)
+        def _append(lst):
+            lst.append(entry)
 
-            _db_mutate_doc("waitlist", [], _append)
-            return
-        except Exception:
-            pass  # fall through to file fallback
+        _db_retry(lambda: _db_mutate_doc("waitlist", [], _append), "append waitlist entry")
+        return
     try:
         with open(WAITLIST_FILE, "a", encoding="utf-8") as f:
             f.write(json.dumps(entry, ensure_ascii=False) + "\n")
@@ -327,7 +468,24 @@ def dispatch_api_request(
     body: Optional[Dict[str, Any]] = None,
     client_ip: str = "127.0.0.1",
 ) -> Tuple[int, Dict[str, Any]]:
-    """Pure in-process API router (used by local ThreadingHTTPServer, Vercel Function, and tests)."""
+    """Pure in-process API router (used by local ThreadingHTTPServer, Vercel Function, and tests).
+
+    A StorageError from any write path becomes a 500 and guarantees the
+    request wrote nothing - the failure mode it replaces silently reset
+    the production counters to ~0 on 2026-10-29."""
+    try:
+        return _dispatch_api_request(method, path, query_params, body, client_ip)
+    except StorageError as exc:
+        return 500, {"ok": False, "error": f"Storage temporarily unavailable; nothing was written. ({exc})"}
+
+
+def _dispatch_api_request(
+    method: str,
+    path: str,
+    query_params: Optional[Dict[str, List[str]]] = None,
+    body: Optional[Dict[str, Any]] = None,
+    client_ip: str = "127.0.0.1",
+) -> Tuple[int, Dict[str, Any]]:
     ensure_seeded()
     if not _RATE_LIMITER.allow(client_ip):
         return 429, {"error": "Rate limit exceeded. Please wait a moment and try again."}
@@ -360,6 +518,8 @@ def dispatch_api_request(
 
                 mutate_stats(_inc_audit)
                 return 200, evaluate_scenario(sid, apply_patch=patched)
+            except StorageError:
+                raise  # storage outage -> 500 via dispatcher, never a silent 400
             except Exception as exc:
                 return 400, {"error": str(exc)}
 
@@ -413,7 +573,7 @@ def dispatch_api_request(
             invite_code = str(body.get("invite_code", "")).strip().upper() or str(body.get("code", "")).strip().upper()
             ref = str(body.get("ref", "")).strip().upper()
 
-            stats = load_stats()
+            stats = load_stats_for_write()
             users = stats.setdefault("users", {})
             referral_codes = stats.setdefault("referral_codes", {})
 
@@ -561,6 +721,8 @@ guard.assert_safe("Critic_Fallback", "Tool_Executor",
                         raw_rules, apply_patch=patched, llm_api_key=llm_api_key
                     )
                 return 200, evaluate_scenario(sid, apply_patch=patched, custom_priors=custom_priors)
+            except StorageError:
+                raise  # storage outage -> 500 via dispatcher, never a silent 400
             except Exception as exc:
                 return 400, {"error": str(exc)}
 
